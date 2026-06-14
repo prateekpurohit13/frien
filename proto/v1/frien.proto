@@ -1,0 +1,325 @@
+syntax = "proto3";
+
+package frien.v1;
+
+option go_package = "github.com/prateekpurohit13/frien/pkg/proto/v1;frienproto";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin Service (local gRPC API — Unix socket or local TCP)
+// ─────────────────────────────────────────────────────────────────────────────
+
+service AdminService {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc ReportThreat(ReportThreatRequest) returns (ReportThreatResponse);
+  rpc ExplainDecision(ExplainDecisionRequest) returns (ExplainDecisionResponse);
+  rpc SetEnforceMode(SetEnforceModeRequest) returns (SetEnforceModeResponse);
+  rpc RollbackEnforcement(RollbackEnforcementRequest) returns (RollbackEnforcementResponse);
+  rpc ListEnforcements(ListEnforcementsRequest) returns (ListEnforcementsResponse);
+  rpc Breakglass(BreakglassRequest) returns (BreakglassResponse);
+  rpc GetHardenReport(GetHardenReportRequest) returns (GetHardenReportResponse);
+  rpc TestPolicy(TestPolicyRequest) returns (TestPolicyResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Peer Service (internal peer-to-peer, not exposed via admin API)
+// ─────────────────────────────────────────────────────────────────────────────
+
+service PeerService {
+  rpc Gossip(stream GossipMessage) returns (stream GossipMessage);
+  rpc AntiEntropy(AntiEntropyRequest) returns (AntiEntropyResponse);
+  rpc Negotiate(NegotiateRequest) returns (NegotiateResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Core wire objects
+// ─────────────────────────────────────────────────────────────────────────────
+
+// OperationEnvelope wraps all data-plane and control-plane objects.
+// Every envelope carries a classical ed25519 signature (always present) and an
+// optional PQC ML-DSA-65 signature. Receivers verify whichever algorithm they support.
+// Both signatures cover the same canonical content (see docs/grpc-contracts.md).
+message OperationEnvelope {
+  uint32          proto_version = 1;
+  string          op_id         = 2;  // ULID; globally unique
+  string          op_type       = 3;  // "threat_record" | "enforcement_decision" | "checkpoint" | "revocation" | "policy"
+  string          node_id       = 4;
+  string          hlc           = 5;  // "<wall_time>-<counter>-<node_id>"
+  uint64          seq           = 6;  // monotonic per-node sequence
+  repeated string parents       = 7;  // SHA-256 hashes of parent op envelopes
+  string          payload_hash  = 8;  // SHA-256 of canonical-encoded payload bytes
+  bytes           payload       = 9;  // serialized payload message
+  string          signed_by     = 10; // "node" | "operator"
+
+  // Classical signature (ed25519) — always present
+  string          key_id        = 11; // "cert:sha256:<fingerprint>"
+  bytes           signature     = 12; // ed25519 signature (64 bytes)
+
+  // PQC signature (ML-DSA-65 via FIPS 204) — present when sender supports PQC.
+  // Receiver verifies this if present and supported; falls back to ed25519 otherwise.
+  // When Go stdlib ships ML-DSA, implementation migrates from circl to stdlib; wire
+  // format and field numbers remain unchanged.
+  string          pqc_algorithm = 13; // "ml-dsa-65" | "" (absent if sender does not support PQC)
+  string          pqc_key_id    = 14; // fingerprint of sender's ML-DSA public key
+  bytes           pqc_signature = 15; // ML-DSA-65 signature (3309 bytes)
+}
+
+message ThreatRecord {
+  string indicator_type  = 1;  // "ip" | "cidr" | "hostname" | "user" | "hash"
+  string id              = 2;
+  string indicator       = 3;  // max 512 bytes
+  string reason          = 4;
+  string severity        = 5;  // "low" | "medium" | "high" | "critical"
+  double confidence      = 6;  // 0.0–1.0
+  string ttl             = 7;  // duration string e.g. "1h"
+  string scope           = 8;  // "local" | "zone:<name>" | "fleet"
+  string detector        = 9;
+  bytes  evidence_json   = 10; // JSON evidence blob; max 65536 bytes
+  uint32 coalesced_count = 11;
+  string reported_by     = 12;
+  string created_at      = 13; // RFC3339
+  string expires_at      = 14; // RFC3339
+}
+
+message EnforcementDecision {
+  string          id                       = 1;
+  string          threat_id                = 2;
+  string          action                   = 3;  // "block" | "allow" | "rate_limit" | "alert"
+  string          target                   = 4;
+  string          adapter                  = 5;  // "nftables" | "networkpolicy" | "cilium" | "envoy" | "siem"
+  string          mode                     = 6;  // "observe" | "enforce"
+  string          created_at               = 7;  // RFC3339
+  string          expires_at               = 8;  // RFC3339
+  string          kernel_timeout           = 9;  // duration; required when mode=enforce
+  string          approved_by_policy       = 10;
+  int64           policy_version           = 11;
+  double          required_weight          = 12;
+  double          matched_weight           = 13;
+  repeated string contributing_identities  = 14;
+  string          rollback_token           = 15;
+  string          owner                    = 16; // "frien-enforcer"
+  bool            applied                  = 17;
+  bool            rolled_back              = 18;
+}
+
+message PeerState {
+  string          node_id          = 1;
+  string          role             = 2;  // "edge" | "core" | "gateway"
+  string          zone             = 3;
+  string          trust_tier       = 4;  // "standard" | "trusted" | "high"
+  double          trust_weight     = 5;
+  string          status           = 6;  // "alive" | "suspect" | "dead" | "left"
+  string          enforce_mode     = 7;  // "observe" | "enforce"
+  string          cert_fingerprint = 8;
+  string          cert_not_after   = 9;  // RFC3339
+  bool            revoked          = 10;
+  string          last_seen        = 11; // RFC3339
+  int32           misbehavior_score = 12;
+  repeated string addresses        = 13; // "<ip>:<port>"
+}
+
+message Checkpoint {
+  string          checkpoint_id           = 1;
+  string          tree_head               = 2;  // SHA-256 of Merkle root at stable cut
+  string          covers_through_hlc      = 3;
+  string          prev_checkpoint         = 4;
+  string          materialized_state_hash = 5;
+  repeated string peer_acks               = 6;
+  string          created_at              = 7;  // RFC3339
+  string          signed_by               = 8;
+  bytes           signature               = 9;
+}
+
+message RevocationRecord {
+  string id               = 1;
+  string cert_fingerprint = 2;
+  string node_id          = 3;
+  string reason           = 4;
+  string revoked_at       = 5;  // RFC3339
+  string signed_by        = 6;  // must be "operator"
+  string operator_key_id  = 7;
+  bytes  signature        = 8;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin Service messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string node_id        = 1;
+  string status         = 2;  // "healthy" | "degraded" | "starting" | "stopping"
+  string enforce_mode   = 3;
+  int64  peer_count     = 4;
+  string proto_version  = 5;
+  string cert_expires   = 6;  // RFC3339
+  int64  wal_size_bytes = 7;
+  string uptime         = 8;
+}
+
+message ListPeersRequest {
+  string zone_filter = 1;  // optional
+}
+
+message ListPeersResponse {
+  repeated PeerState peers = 1;
+}
+
+message ReportThreatRequest {
+  string indicator      = 1;  // required; max 512 bytes
+  string indicator_type = 2;  // required
+  string reason         = 3;  // required
+  string severity       = 4;  // required
+  double confidence     = 5;  // required; 0.0–1.0
+  string ttl            = 6;  // required; duration string
+  string scope          = 7;  // required
+  string evidence_json  = 8;  // optional; JSON; max 65536 bytes
+}
+
+message ReportThreatResponse {
+  string op_id     = 1;
+  string threat_id = 2;
+  string status    = 3;  // "accepted" | "coalesced" | "shed"
+}
+
+message ExplainDecisionRequest {
+  string indicator = 1;  // required
+}
+
+message ExplainDecisionResponse {
+  string          indicator             = 1;
+  string          decision              = 2;  // "enforced" | "observe_only" | "denied_by_policy" | "no_record"
+  string          reason                = 3;
+  repeated string contributing_identities = 4;
+  double          matched_weight        = 5;
+  double          required_weight       = 6;
+  string          policy_id             = 7;
+  int64           policy_version        = 8;
+  string          expires_at            = 9;
+  string          rollback_token        = 10;
+  string          adapter               = 11;
+  string          audit_entry_id        = 12;
+}
+
+message SetEnforceModeRequest {
+  string mode    = 1;  // required; "observe" | "enforce"
+  string adapter = 2;  // required
+  string reason  = 3;  // required; audit reason
+}
+
+message SetEnforceModeResponse {
+  string previous_mode = 1;
+  string current_mode  = 2;
+  string audit_id      = 3;
+}
+
+message RollbackEnforcementRequest {
+  string rollback_token = 1;  // required
+  string reason         = 2;  // required
+}
+
+message RollbackEnforcementResponse {
+  string status   = 1;  // "removed" | "already_expired" | "not_found"
+  string audit_id = 2;
+}
+
+message ListEnforcementsRequest {
+  string adapter_filter  = 1;
+  bool   include_expired = 2;
+}
+
+message ListEnforcementsResponse {
+  repeated EnforcementDecision enforcements = 1;
+}
+
+message BreakglassRequest {
+  bool   flush_enforcement = 1;  // must be true
+  bool   force_observe     = 2;  // must be true
+  string reason            = 3;  // required
+  string confirmation_code = 4;  // required; prevents accidental invocation
+}
+
+message BreakglassResponse {
+  int64  rules_removed = 1;
+  string new_mode      = 2;
+  string audit_id      = 3;
+}
+
+message GetHardenReportRequest {
+  string profile = 1;  // optional; "dev" | "server" | "edge" | "kubernetes" | "strict"
+}
+
+message HardenCheck {
+  string name              = 1;
+  string status            = 2;  // "pass" | "warn" | "fail"
+  string message           = 3;
+  bool   self_lockout_risk = 4;
+}
+
+message GetHardenReportResponse {
+  string              overall_status = 1;
+  repeated HardenCheck checks        = 2;
+}
+
+message TestPolicyRequest {
+  string policy_id   = 1;  // optional; empty = active policy
+  string threat_json = 2;  // required; JSON ThreatRecord
+}
+
+message TestPolicyResponse {
+  string          decision               = 1;  // "would_enforce" | "observe_only" | "denied"
+  string          reason                 = 2;
+  string          matched_policy         = 3;
+  double          required_weight        = 4;
+  repeated string protected_reasons      = 5;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Peer Service messages
+// ─────────────────────────────────────────────────────────────────────────────
+
+message GossipMessage {
+  uint32                    proto_version          = 1;
+  string                    sender_node_id         = 2;
+  string                    sender_zone            = 3;
+  repeated OperationEnvelope deltas                = 4;
+  repeated string           membership_updates     = 5;
+  repeated RevocationRecord revocation_hints       = 6;
+  uint64                    max_message_bytes_hint = 7;
+}
+
+message AntiEntropyRequest {
+  uint32 proto_version    = 1;
+  string requester_id     = 2;
+  string zone             = 3;
+  string root_hash        = 4;
+  string since_checkpoint = 5;
+}
+
+message AntiEntropyResponse {
+  repeated OperationEnvelope missing_ops      = 1;
+  string                     your_checkpoint  = 2;
+}
+
+message NegotiateRequest {
+  repeated uint32 supported_versions = 1;
+}
+
+message NegotiateResponse {
+  uint32 negotiated_version = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Misbehavior proof (produced on equivocation detection)
+// ─────────────────────────────────────────────────────────────────────────────
+
+message MisbehaviorProof {
+  string             id              = 1;
+  string             offender_node_id = 2;
+  string             cert_fingerprint = 3;
+  OperationEnvelope  op_a            = 4;  // first conflicting operation
+  OperationEnvelope  op_b            = 5;  // second conflicting operation (same seq, different payload)
+  string             detected_by     = 6;
+  string             detected_at     = 7;  // RFC3339
+}
