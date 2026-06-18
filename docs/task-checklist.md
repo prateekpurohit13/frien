@@ -179,17 +179,55 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ---
 
-## Phase 3: Scoped CRDT State Mesh (Sprint 3)
+## Phase 3: Scoped State Mesh (Sprint 3)
 
-- [ ] `internal/crdt/hlc.go` — Hybrid Logical Clock
-- [ ] `internal/crdt/orset.go` — expiring delta OR-Set
-- [ ] `internal/crdt/crdt_test.go` — convergence, idempotency, commutativity, associativity property tests
-- [ ] `internal/scope/router.go` — zone/scope replication router
-- [ ] Anti-entropy sync (root-hash exchange + DAG walk above shared checkpoint)
+**State model (see FRIEN_ARCHITECTURE §10 Layer 3 + database.md "CRDT State Model"):** the replicated state is a **grow-only set of immutable signed ops keyed by `op_id`; merge is pure set-union**. Retraction, equivocation, and quorum-counting are **projections** over the set (pure functions of it); record TTL expiry additionally reads the local clock, so it converges as clocks agree — the set itself always converges by union. None of these are part of the merge. This is chosen over OR-Set (unnecessary add-wins/tombstone machinery that would collapse the distinct-identity quorum signal) and over keep-one LWW-element-set (which would discard equivocation evidence). Causal `parents` are optional and not gated on in Phase 3.
+
+### Sprint 3a — HLC (foundation)
+- [ ] `internal/crdt/hlc.go` — Hybrid Logical Clock: `Now()` (send), `Update(remote)` (receive), bounded physical-drift clamp, monotonicity
+- [ ] HLC persistence to bbolt `meta` so the clock never regresses across restart
+- [ ] Wire HLC into the `transport.clock_skew_window` rejection (the Phase 2 deferral) — reject ops whose origin HLC implies skew beyond the window, measured against local time
+- [ ] `internal/crdt/hlc_test.go` — monotonicity, causal update, drift clamp, restart-no-regression
+
+### Sprint 3b — Op set + projections (the core CRDT)
+- [ ] `internal/crdt/opset.go` — grow-only set keyed by `op_id`; `Merge` = union; `Add(env)` idempotent; in-memory + bbolt-backed
+- [ ] `internal/crdt/project.go` — projections: `present(op)` = `local_now ≥ expires_at` (origin-declared, policy-capped — in the op, not receive-anchored) AND not author-retracted; active-set query by indicator/scope. Keep record-TTL distinct from the quorum window (the latter is local-receive-time, Phase 5)
+- [ ] `internal/crdt/retraction.go` — author-only retraction (verify `signed_by` == author, `seq` strictly greater); `op_type: "retraction"` referencing target `op_id`
+- [ ] `internal/crdt/equivocation.go` — `(node_id → seq → op_hash)` index; emit `EquivocationProof` (two signed envelopes) on collision
+- [ ] `internal/crdt/crdt_test.go` — behavioral tests: expiry by origin `expires_at` (late-delivered expired op never present, no resurrection); retraction LWW-by-seq (author-only, lower/equal seq ignored); equivocation evidence preserved (both ops retained, proof emitted — not overwritten); replay (duplicate `op_id`) rejected
+- [ ] `internal/crdt/convergence_test.go` — **CvRDT join-semilattice property tests** (executable proof of the union-merge claim; *Database Internals* Ch 11 / DDIA Ch 5), randomized inputs via stdlib `testing/quick` with a fixed seed (no new dependency):
+  - [ ] **Idempotence** — `Merge(a, a) == a`
+  - [ ] **Commutativity** — `Merge(a, b) == Merge(b, a)`
+  - [ ] **Associativity** — `Merge(Merge(a, b), c) == Merge(a, Merge(b, c))`
+  - [ ] **Monotonicity / inflationary join** — `a ⊆ Merge(a, b)` and `b ⊆ Merge(a, b)` (state never shrinks under merge)
+  - [ ] **Order-independent convergence** — N ops delivered to K replicas under randomized shuffles, duplicates, and dropped-then-anti-entropy re-delivery all reach a byte-identical materialized set (compare via canonical state hash)
+  - [ ] All assertions compare via the canonical state serialization (sorted by `op_id`, fixed encoding) so equality is well-defined
+
+### Sprint 3c — Scope router
+- [ ] `internal/scope/router.go` — parse `local`/`zone:<name>`/`fleet`; subscription set per node
+- [ ] Egress + ingress scope enforcement (defense in depth): never send `local`; drop ops for unsubscribed scopes on receipt
+- [ ] `internal/scope/router_test.go`
+
+### Sprint 3d — Per-scope anti-entropy + gossip wiring
+- [ ] `internal/crdt/merkle.go` — per-scope Merkle root over op_ids (incremental, not recompute-all); root exposed per subscribed scope
+- [ ] `internal/crdt/antientropy.go` — per-scope root-hash exchange → set-difference reconcile, bounded below by latest common checkpoint
+- [ ] Wire the QUIC-backed `membership.Prober` and the gossip pump (ship membership Updates + CRDT op deltas + revocation hints over `PeerService.Gossip`/`AntiEntropy` streams) — closes the Phase 2 deferral
+- [ ] Inbound op admission: route received ops through `internal/admission` (rate/size/per-scope cap, shed on overflow) before they enter the set
+- [ ] Per-peer HLC watermark vector (bbolt `peer_watermark`) for the compaction stable cut
+- [ ] `ListPeers` admin RPC implemented against `membership.MemberList`
 
 ### Phase 3 Exit Criteria
-- [ ] Zone-scoped threat record converges on in-scope peers; out-of-scope peer does not receive it
-- [ ] Replayed operation is rejected
+- [ ] Zone-scoped threat op converges on in-scope peers; out-of-scope peer never receives it (enforced on both egress and ingress)
+- [ ] 3–5 node local cluster syncs a zone-scoped op within 2s (architecture target)
+- [ ] Replayed op (duplicate `op_id`) is rejected; op outside the clock-skew window is rejected
+- [ ] Two ops at the same `(node_id, seq)` with different content produce an equivocation proof (evidence preserved, not overwritten)
+- [ ] Expired op is not resurrected by late anti-entropy
+- [ ] Deterministic simulation: union converges under reorder/drop/delay/partition (seeded, reproducible)
+
+### Deferred to Phase 4 (consciously not in Phase 3)
+- Merkle **DAG** parent tracking / causal-history tamper-evidence (`parents` field stays in the envelope but is not gated on); equivocation here uses the `(node_id, seq)` index, not the DAG
+- Signed **checkpoint** creation and WAL/DAG **compaction** (Phase 3 computes the watermark; Phase 4 acts on it)
+- Delta-interval ack buffers as a bandwidth optimization (correctness already comes from idempotent union + anti-entropy backstop)
 
 ---
 

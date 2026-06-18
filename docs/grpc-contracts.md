@@ -62,7 +62,7 @@ service PeerService {
 message OperationEnvelope {
   uint32 proto_version    = 1;  // wire protocol version
   string op_id            = 2;  // ULID; globally unique
-  string op_type          = 3;  // "threat_record" | "enforcement_decision" | "checkpoint" | "revocation" | "policy"
+  string op_type          = 3;  // "threat_record" | "enforcement_decision" | "retraction" | "checkpoint" | "revocation" | "policy"
   string node_id          = 4;
   string hlc              = 5;  // "<wall_time>-<counter>-<node_id>"
   uint64 seq              = 6;  // monotonic per-node sequence

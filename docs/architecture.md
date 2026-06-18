@@ -14,7 +14,7 @@ frien is a headless decentralized security-state mesh. Infrastructure nodes dete
 Layer 0  Protocol Versioning          — every wire object carries proto_version
 Layer 1  Transport + Identity         — QUIC, mTLS, short-lived certs
 Layer 2  Membership                   — SWIM (alive/suspect/dead/left)
-Layer 3  Distributed State + Scoping  — delta OR-Set CRDT, scope/zone router
+Layer 3  Distributed State + Scoping  — op-id-keyed grow-only set (union merge), deterministic projections, scope/zone router
 Layer 4  Tamper-Evidence + Compaction — Merkle DAG, checkpoint, compaction
 Layer 5  Trust + Policy Engine        — operator-signed policy, partition-safe quorum
 Layer 6  Detection + Admission        — pluggable detectors, token-bucket, coalescing
@@ -61,11 +61,12 @@ Local operator tool. Communicates via the local gRPC Unix socket. All commands a
 - Seed-node bootstrap; optional mDNS for lab/LAN
 - Membership messages piggyback bounded CRDT deltas and revocation-set updates
 
-### `internal/crdt` — Delta CRDT Engine
-- Expiring delta OR-Set for ThreatRecords and EnforcementDecisions
-- LWW-Map for node metadata, G-Counter for telemetry
-- Hybrid Logical Clocks (HLC) for causality without requiring clock sync
-- Scope/zone replication: nodes only replicate the scopes they subscribe to
+### `internal/crdt` — State Engine
+- Grow-only set of immutable signed ops keyed by `op_id`; merge is pure set-union (a join-semilattice — SEC by construction). Not an OR-Set: `op_id` is unique and single-author, so there is no concurrent same-key write to arbitrate.
+- TTL expiry, author retraction (single-writer LWW by `seq`), and quorum are deterministic projections over the set, not part of the merge. Union preserves equivocation evidence that a keep-one LWW-set would discard.
+- LWW-Register-per-field for node metadata, G-Counter for telemetry. `EnforcementDecision.applied`/`rolled_back` are local bbolt columns, not gossiped.
+- Hybrid Logical Clocks (HLC) stamp every op; persisted across restart, clamped to bounded drift, feeding the clock-skew rejection.
+- Scope/zone replication enforced on both egress and ingress; anti-entropy reconciles per-scope Merkle roots bounded below by the latest common checkpoint.
 
 ### `internal/verify` — Merkle DAG + Equivocation Detection
 - Every operation in a signed envelope with parent hashes

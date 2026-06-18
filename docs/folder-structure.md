@@ -19,7 +19,7 @@ frien/
 │   ├── checkpoint/               # DAG/WAL compaction + signed checkpoint logic
 │   ├── config/                   # Config loading, parsing, validation
 │   ├── controlplane/             # Operator-signed policy + trust-tier distribution
-│   ├── crdt/                     # OR-Set, LWW-Map, G-Counter, HLC
+│   ├── crdt/                     # op-id-keyed grow-only set (union), LWW-Register, G-Counter, HLC
 │   ├── detector/                 # Detector interface + built-in detectors
 │   ├── enforcer/                 # Adapter interfaces, self-expiry, dead-man switch
 │   ├── errors/                   # Centralized error definitions + gRPC status mapping
@@ -142,8 +142,9 @@ Bootstrap only. Calls into `internal/` packages in order:
 - Signed snapshot + checkpoint files
 
 ### `internal/crdt`
-- Expiring OR-Set with delta propagation
-- HLC implementation
+- Grow-only set of immutable signed ops keyed by op_id; union merge; TTL/retraction/quorum as deterministic projections
+- Delta propagation + per-scope anti-entropy backstop (idempotent union self-heals dropped deltas)
+- HLC implementation (persisted, drift-clamped)
 - Scope/zone-aware replication state
 
 ### `internal/verify`
