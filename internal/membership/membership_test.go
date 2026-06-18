@@ -1,0 +1,213 @@
+package membership
+
+import (
+	"context"
+	"math/rand"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/rs/zerolog"
+)
+
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newFakeClock() *fakeClock { return &fakeClock{t: time.Unix(1_700_000_000, 0)} }
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// world is a shared liveness map; a probe succeeds only if the node is up.
+type world struct {
+	mu sync.Mutex
+	up map[string]bool
+}
+
+func (w *world) set(id string, up bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.up[id] = up
+}
+
+func (w *world) alive(id string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.up[id]
+}
+
+type fakeProber struct{ w *world }
+
+func (p fakeProber) Ping(_ context.Context, target Member) error {
+	if p.w.alive(target.NodeID) {
+		return nil
+	}
+	return context.DeadlineExceeded
+}
+
+func (p fakeProber) PingReq(_ context.Context, relay, target Member) error {
+	if p.w.alive(relay.NodeID) && p.w.alive(target.NodeID) {
+		return nil
+	}
+	return context.DeadlineExceeded
+}
+
+func TestApplyAddsUnknownMember(t *testing.T) {
+	ml := NewMemberList("self", newFakeClock().Now)
+	if !ml.Apply(Update{NodeID: "a", State: StateAlive}).Changed {
+		t.Fatal("first sighting of a member must register a change")
+	}
+	if m, ok := ml.Get("a"); !ok || m.State != StateAlive {
+		t.Fatalf("member a = %+v, ok=%v", m, ok)
+	}
+}
+
+func TestApplyIncarnationRules(t *testing.T) {
+	ml := NewMemberList("self", newFakeClock().Now)
+	ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 5})
+
+	// Lower-incarnation alive is ignored.
+	if ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 4}).Changed {
+		t.Error("stale alive (lower incarnation) must not change state")
+	}
+	// Suspect at equal incarnation transitions alive -> suspect.
+	if !ml.Apply(Update{NodeID: "a", State: StateSuspect, Incarnation: 5}).Changed {
+		t.Error("suspect at equal incarnation should transition alive->suspect")
+	}
+	// Higher-incarnation alive refutes the suspicion.
+	if !ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 6}).Changed {
+		t.Error("higher-incarnation alive should refute suspicion")
+	}
+	if m, _ := ml.Get("a"); m.State != StateAlive || m.Incarnation != 6 {
+		t.Fatalf("member a = %+v, want alive@6", m)
+	}
+}
+
+func TestApplySelfRefutation(t *testing.T) {
+	ml := NewMemberList("self", newFakeClock().Now)
+	res := ml.Apply(Update{NodeID: "self", State: StateSuspect, Incarnation: 3})
+	if !res.SelfRefute || res.Incarnation != 4 {
+		t.Fatalf("self-accusation should refute with incarnation 4, got %+v", res)
+	}
+	if ml.LocalIncarnation() != 4 {
+		t.Fatalf("local incarnation = %d, want 4", ml.LocalIncarnation())
+	}
+}
+
+func TestExpireSuspects(t *testing.T) {
+	clk := newFakeClock()
+	ml := NewMemberList("self", clk.Now)
+	ml.Apply(Update{NodeID: "a", State: StateAlive})
+	ml.Apply(Update{NodeID: "a", State: StateSuspect})
+
+	if got := ml.ExpireSuspects(time.Second); len(got) != 0 {
+		t.Fatalf("nothing should expire before the timeout, got %v", got)
+	}
+	clk.Advance(time.Second)
+	if got := ml.ExpireSuspects(time.Second); len(got) != 1 || got[0].State != StateDead {
+		t.Fatalf("suspect should expire to dead, got %v", got)
+	}
+}
+
+func TestProbeFailureMarksSuspect(t *testing.T) {
+	clk := newFakeClock()
+	w := &world{up: map[string]bool{"b": false}}
+	s := New("a", fakeProber{w}, Config{
+		ProbeInterval:     100 * time.Millisecond,
+		ProbeTimeout:      10 * time.Millisecond,
+		SuspectMultiplier: 4,
+		IndirectProbes:    2,
+	}, zerolog.Nop(), WithClock(clk.Now), WithRand(rand.New(rand.NewSource(1))))
+
+	s.Seed("b", []string{"127.0.0.1:1"})
+	s.ProbeOnce(context.Background())
+
+	if m, _ := s.List().Get("b"); m.State != StateSuspect {
+		t.Fatalf("unreachable peer should be suspect, got %s", m.State)
+	}
+
+	clk.Advance(500 * time.Millisecond)
+	s.Tick()
+	if m, _ := s.List().Get("b"); m.State != StateDead {
+		t.Fatalf("suspect should expire to dead, got %s", m.State)
+	}
+}
+
+func TestThreeNodeDiscoveryAndFailure(t *testing.T) {
+	clk := newFakeClock()
+	w := &world{up: map[string]bool{"a": true, "b": true, "c": true}}
+	cfg := Config{
+		ProbeInterval:     100 * time.Millisecond,
+		ProbeTimeout:      10 * time.Millisecond,
+		SuspectMultiplier: 3,
+		IndirectProbes:    2,
+	}
+	mk := func(id string, seed int64) *SWIM {
+		return New(id, fakeProber{w}, cfg, zerolog.Nop(), WithClock(clk.Now), WithRand(rand.New(rand.NewSource(seed))))
+	}
+	a, b, c := mk("a", 1), mk("b", 2), mk("c", 3)
+
+	// Seed a partial topology: a<->b and b<->c. c and a have never met.
+	a.Seed("b", []string{"b:1"})
+	b.Seed("a", []string{"a:1"})
+	b.Seed("c", []string{"c:1"})
+	c.Seed("b", []string{"b:1"})
+
+	// round drives only the live nodes: a downed node sends no probes and
+	// gossips nothing, which is what lets its peers detect the failure.
+	round := func(live ...*SWIM) {
+		updates := map[*SWIM][]Update{}
+		for _, n := range live {
+			n.ProbeOnce(context.Background())
+			n.Tick()
+			updates[n] = n.Updates(10)
+		}
+		for src, ups := range updates {
+			for _, dst := range live {
+				if dst == src {
+					continue
+				}
+				for _, u := range ups {
+					dst.Apply(u)
+				}
+			}
+		}
+		clk.Advance(cfg.ProbeInterval)
+	}
+
+	for i := 0; i < 5; i++ {
+		round(a, b, c)
+	}
+
+	// Discovery: a learned about c (and vice-versa) purely through b's gossip.
+	if m, ok := a.List().Get("c"); !ok || m.State == StateDead {
+		t.Fatalf("a should have discovered c as live, got %+v ok=%v", m, ok)
+	}
+	if _, ok := c.List().Get("a"); !ok {
+		t.Fatal("c should have discovered a")
+	}
+
+	// Now b dies: it stops probing and gossiping. a and c must detect and
+	// converge on b=dead.
+	w.set("b", false)
+	for i := 0; i < 30; i++ {
+		round(a, c)
+	}
+
+	for _, n := range []*SWIM{a, c} {
+		if m, ok := n.List().Get("b"); !ok || m.State != StateDead {
+			t.Fatalf("%s should see b as dead, got %+v ok=%v", n.localID, m, ok)
+		}
+	}
+}

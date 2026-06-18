@@ -150,30 +150,32 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 ## Phase 2: Peer Transport, Membership, and Admission (Sprint 2)
 
 ### Transport Package
-- [ ] `internal/transport/quic.go` — QUIC listener and dialer
-- [ ] `internal/transport/session.go` — peer session management
-- [ ] `internal/transport/tls.go` — mTLS config builder
-- [ ] `internal/transport/transport_test.go`
+- [x] `internal/transport/quic.go` — QUIC listener and dialer (quic-go; ALPN `frien-mesh/1`)
+- [x] `internal/transport/session.go` — peer session management; raw QUIC + length-prefixed protobuf framing; client/server version negotiation on first stream
+- [x] `internal/transport/tls.go` — mTLS config builder; `tls.X25519MLKEM768` default (classical fallback); CN-based peer verify + revocation hook
+- [x] `internal/transport/transport_test.go` — establish/negotiate, classical KEM, revoked-peer drop, untrusted-CA reject, frame bounds
+- Note: `transport.clock_skew_window` enforcement is deferred to Phase 3 — it operates on operation HLCs, which do not exist until the CRDT layer. Config field is validated; transport carries no placeholder for it.
 
 ### Version Negotiation
-- [ ] `internal/version/negotiate.go` — handshake negotiation
-- [ ] `internal/version/negotiate_test.go`
+- [x] `internal/version/negotiate.go` — handshake negotiation (highest-common Resolve/Accept; replaced first-match Negotiate)
+- [x] `internal/version/negotiate_test.go`
 
 ### Membership Package
-- [ ] `internal/membership/swim.go` — SWIM probe/ping-req/indirect-ping
-- [ ] `internal/membership/state.go` — alive/suspect/dead/left FSM
-- [ ] `internal/membership/membership_test.go`
+- [x] `internal/membership/swim.go` — SWIM driver: direct probe → indirect ping-req relays → suspect; incarnation/self-refutation; bounded O(log N) update dissemination; Prober + Clock + Rand injected for determinism
+- [x] `internal/membership/state.go` — alive/suspect/dead/left FSM with SWIM incarnation merge rules; suspicion-timeout expiry
+- [x] `internal/membership/membership_test.go` — merge-rule units, self-refutation, suspect expiry, probe→suspect→dead, and deterministic 3-node discovery + failure detection
 
 ### Admission Package
-- [ ] `internal/admission/budget.go` — token-bucket per detector and per node
-- [ ] `internal/admission/coalesce.go` — signal coalescing
-- [ ] `internal/admission/shed.go` — priority shedding under storm
-- [ ] `internal/admission/admission_test.go`
+- [x] `internal/admission/budget.go` — token-bucket per detector and per node (detector token refunded when node bucket is the binding limit)
+- [x] `internal/admission/coalesce.go` — signal coalescing into a running coalesced_count; bounded by window-based Expire
+- [x] `internal/admission/shed.go` — priority shedding; high/critical never shed, low/medium shed below confidence floor under storm
+- [x] `internal/admission/admission.go` — Controller composing coalesce → shed → budget (storm = node fill ratio < 0.5)
+- [x] `internal/admission/admission_test.go`
 
 ### Phase 2 Exit Criteria
-- [ ] 3 nodes discover each other and detect failure
-- [ ] Simulated storm is coalesced/shed without crash
-- [ ] Revoked cert session is rejected at transport
+- [x] 3 nodes discover each other and detect failure — proven by deterministic in-process SWIM simulation (`TestThreeNodeDiscoveryAndFailure`); the live QUIC gossip pump that ships membership Updates between real processes is wired in Phase 3
+- [x] Simulated storm is coalesced/shed without crash — `TestControllerShedsUnderStorm`, coalescer tests
+- [x] Revoked cert session is rejected at transport — `TestRevokedPeerRejected`
 
 ---
 
@@ -261,16 +263,20 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ## Current Status
 
-**Completed:** Phase 0 (definition + safety baseline + CI) ✓ and Phase 1 (secure node foundation) ✓
+**Completed:** Phase 0 (definition + safety baseline + CI) ✓, Phase 1 (secure node foundation) ✓, and Phase 2 (peer transport, membership, admission) ✓
 
 **Verified:**
 - `go build ./...` — clean
 - `go vet ./...` — clean
-- `go test -race ./...` — all pass (config, errors, version, identity, storage, middleware, health, grpc, oplog)
+- `gofmt -l` — no diffs
+- `govulncheck ./...` — no vulnerabilities
+- `go test -race ./...` — all pass (config, errors, version, identity, storage, middleware, health, grpc, oplog, transport, membership, admission)
 - End-to-end smoke: daemon starts → `frienctl status` over socket → `/healthz`+`/readyz` 200 → SIGTERM clean shutdown
 - Restart smoke: WAL replay recovers prior lifecycle records (seq continues); corrupt WAL → daemon refuses to start
 
-**Next step (Phase 2):** QUIC + mTLS peer transport, protocol-version negotiation at handshake, SWIM membership, admission control (budgets/coalescing/shedding), clock-skew window, and the deterministic simulation harness. Wire `tls.X25519MLKEM768` into the transport at this point. `ListPeers` becomes implementable once membership exists.
+**Phase 2 delivered:** raw QUIC + mTLS peer transport (`tls.X25519MLKEM768` default), length-prefixed protobuf framing, highest-common version negotiation at handshake, transport-layer revocation hook, SWIM membership (incarnation/refutation/indirect-probe/bounded dissemination), and the admission controller (token-bucket budgets, coalescing, priority shedding).
+
+**Next step (Phase 3):** scoped CRDT state mesh — HLC, expiring delta OR-Set, zone/scope router, anti-entropy. This phase also wires the QUIC-backed `membership.Prober` and the gossip pump that ships membership Updates + CRDT deltas between live nodes, and enforces `transport.clock_skew_window` against operation HLCs. `ListPeers` becomes implementable against `membership.MemberList`.
 
 ---
 
@@ -281,6 +287,10 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 - Admin API has no Auth/RBAC interceptor yet (Unix-socket file permissions are the current access control). Auth, RBAC, rate-limit, validation, and audit interceptors slot into `middleware.Chain` in later phases.
 - `oplog` request/op IDs use random tokens, not ULIDs; a ULID is adopted in Phase 3 where lexical time-ordering matters. Cross-node signature verification on replay is deferred to the Phase 4 verify layer (all Phase 1 WAL records are self-authored).
 - Envelope signing in `oplog` is ed25519-only for now; PQC (ML-DSA-65) envelope signing over the wire is wired with transport in Phase 2+.
+- Peer transport uses raw QUIC streams with length-prefixed protobuf framing (reusing `pkg/proto/v1` PeerService message types as the wire schema), not gRPC-over-QUIC. gRPC remains the admin API only.
+- `transport.clock_skew_window` is validated in config but not yet enforced — it gates operations by origin HLC, which arrives with the Phase 3 CRDT layer. No placeholder is carried in the transport package.
+- `membership` is decoupled from QUIC via the `Prober` interface and an injected clock/RNG; the live QUIC-backed Prober and the Update/delta gossip pump are wired in Phase 3. The 3-node exit criterion is currently proven by deterministic in-process simulation.
+- `admission.stormFillThreshold` (0.5 node-budget fill ratio) is an internal tuning constant, not a config/wire value.
 - `frienctl` implements `version` and `status`; remaining subcommands track their server-side RPCs.
 - nftables adapter requires Linux; tests on non-Linux CI should skip enforcer tests via build tags
 - Kubernetes adapter deferred to Phase 7
