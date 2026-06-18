@@ -1,0 +1,41 @@
+# golangci-lint configuration (schema v2).
+# The version is pinned in CI (.github/workflows/ci.yml) so the schema here and the
+# binary there always agree. Run locally with: make lint
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # Start from the curated default set, then add high-signal linters. We avoid
+  # noisy style linters at this stage so CI failures mean real problems.
+  default: standard
+  enable:
+    - bodyclose    # HTTP/response bodies must be closed
+    - errcheck     # unchecked errors
+    - ineffassign  # ineffectual assignments
+    - misspell     # common misspellings in comments/strings
+    - revive       # golint successor: exported-symbol docs, naming
+    - unconvert    # redundant type conversions
+    - unparam      # unused function parameters
+  exclusions:
+    rules:
+      # Generated protobuf code is not ours to lint.
+      - path: pkg/proto/
+        linters:
+          - revive
+          - unparam
+      # Tests favor readability over exhaustive error checks on helpers.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/prateekpurohit13/frien

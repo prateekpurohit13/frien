@@ -12,7 +12,8 @@ import (
 // independently-valid envelopes with different content.
 //
 // Fields included (in order):
-//   proto_version | op_id | op_type | node_id | hlc | seq | parents_hash | payload_hash | signed_by
+//
+//	proto_version | op_id | op_type | node_id | hlc | seq | parents_hash | payload_hash | signed_by
 //
 // Fields excluded: signature, pqc_signature, pqc_algorithm, pqc_key_id, key_id, payload.
 // payload is excluded because it is already committed to via payload_hash.

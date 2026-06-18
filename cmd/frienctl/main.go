@@ -1,18 +1,120 @@
+// Command frienctl is the operator CLI. It talks to a local friend daemon over the
+// admin gRPC Unix socket. In Phase 1 it implements `version` and `status`; the
+// remaining operator commands (peers, report, explain, mode, rollback, breakglass,
+// harden, policy) are added as their server-side RPCs land.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
+	"text/tabwriter"
+	"time"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/prateekpurohit13/frien/internal/config"
 	"github.com/prateekpurohit13/frien/internal/version"
+	frienv1 "github.com/prateekpurohit13/frien/pkg/proto/v1"
 )
 
+const defaultSocket = "/run/frien/admin.sock"
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("frienctl %s (proto v%d)\n", version.SoftwareVersion, version.ProtoVersion)
-		os.Exit(0)
+	if err := dispatch(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "frienctl: %v\n", err)
+		os.Exit(1)
 	}
-	// TODO(phase1): implement frienctl subcommands (status, peers, report, explain, mode, rollback, breakglass, harden, policy)
-	fmt.Fprintln(os.Stderr, "frienctl: not yet implemented — coming in Phase 1")
-	os.Exit(1)
+}
+
+func dispatch(args []string) error {
+	if len(args) == 0 {
+		usage()
+		return fmt.Errorf("no command given")
+	}
+	switch args[0] {
+	case "version":
+		fmt.Printf("frienctl %s (proto v%d)\n", version.SoftwareVersion, version.ProtoVersion)
+		return nil
+	case "status":
+		return cmdStatus(args[1:])
+	case "help", "-h", "--help":
+		usage()
+		return nil
+	default:
+		usage()
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `frienctl — frien operator CLI
+
+Usage:
+  frienctl status [--socket PATH | --config PATH]
+  frienctl version
+
+Flags:
+  --socket PATH   admin API Unix socket (default `+defaultSocket+`)
+  --config PATH   read the socket path from a daemon config file
+`)
+}
+
+// cmdStatus dials the admin socket and prints the node's status.
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	socket := fs.String("socket", "", "admin API Unix socket path")
+	cfgPath := fs.String("config", "", "daemon config file to read the socket path from")
+	timeout := fs.Duration("timeout", 5*time.Second, "request timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	socketPath, err := resolveSocket(*socket, *cfgPath)
+	if err != nil {
+		return err
+	}
+
+	conn, err := grpc.NewClient("unix:"+socketPath, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("connecting to admin socket %s: %w", socketPath, err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	resp, err := frienv1.NewAdminServiceClient(conn).GetStatus(ctx, &frienv1.GetStatusRequest{})
+	if err != nil {
+		return fmt.Errorf("GetStatus: %w", err)
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(w, "node_id\t%s\n", resp.NodeId)
+	fmt.Fprintf(w, "status\t%s\n", resp.Status)
+	fmt.Fprintf(w, "enforce_mode\t%s\n", resp.EnforceMode)
+	fmt.Fprintf(w, "peers\t%d\n", resp.PeerCount)
+	fmt.Fprintf(w, "proto_version\t%s\n", resp.ProtoVersion)
+	fmt.Fprintf(w, "cert_expires\t%s\n", resp.CertExpires)
+	fmt.Fprintf(w, "wal_size_bytes\t%d\n", resp.WalSizeBytes)
+	fmt.Fprintf(w, "uptime\t%s\n", resp.Uptime)
+	return w.Flush()
+}
+
+// resolveSocket determines which admin socket to dial, in precedence order:
+// explicit --socket, then the socket path from --config, then the default.
+func resolveSocket(socket, cfgPath string) (string, error) {
+	if socket != "" {
+		return socket, nil
+	}
+	if cfgPath != "" {
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			return "", fmt.Errorf("loading config %s: %w", cfgPath, err)
+		}
+		return cfg.AdminAPI.Socket, nil
+	}
+	return defaultSocket, nil
 }

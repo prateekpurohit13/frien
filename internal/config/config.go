@@ -11,20 +11,20 @@ import (
 // Config is the validated runtime configuration for the frien daemon.
 // All fields are populated after Load() returns without error.
 type Config struct {
-	Node        NodeConfig        `yaml:"node"`
-	Identity    IdentityConfig    `yaml:"identity"`
-	Transport   TransportConfig   `yaml:"transport"`
-	Seeds       []SeedConfig      `yaml:"seeds"`
-	MDNSEnabled bool              `yaml:"mdns_discovery"`
-	Membership  MembershipConfig  `yaml:"membership"`
-	AdminAPI    AdminAPIConfig    `yaml:"admin_api"`
-	Storage     StorageConfig     `yaml:"storage"`
-	Admission   AdmissionConfig   `yaml:"admission"`
-	Policy      PolicyConfig      `yaml:"policy"`
-	Enforcement EnforcementConfig `yaml:"enforcement"`
-	Detectors   DetectorConfig    `yaml:"detectors"`
-	Observability ObsConfig       `yaml:"observability"`
-	Harden      HardenConfig      `yaml:"harden"`
+	Node          NodeConfig        `yaml:"node"`
+	Identity      IdentityConfig    `yaml:"identity"`
+	Transport     TransportConfig   `yaml:"transport"`
+	Seeds         []SeedConfig      `yaml:"seeds"`
+	MDNSEnabled   bool              `yaml:"mdns_discovery"`
+	Membership    MembershipConfig  `yaml:"membership"`
+	AdminAPI      AdminAPIConfig    `yaml:"admin_api"`
+	Storage       StorageConfig     `yaml:"storage"`
+	Admission     AdmissionConfig   `yaml:"admission"`
+	Policy        PolicyConfig      `yaml:"policy"`
+	Enforcement   EnforcementConfig `yaml:"enforcement"`
+	Detectors     DetectorConfig    `yaml:"detectors"`
+	Observability ObsConfig         `yaml:"observability"`
+	Harden        HardenConfig      `yaml:"harden"`
 }
 
 type NodeConfig struct {
@@ -44,10 +44,10 @@ type IdentityConfig struct {
 	OperatorRootCert string `yaml:"operator_root_cert"`
 
 	// CA integration mode: "file" (default) | "bundle_url" | "spiffe"
-	CAMode      string `yaml:"ca_mode"`
-	CABundleURL string `yaml:"ca_bundle_url"`    // used when ca_mode=bundle_url
+	CAMode          string `yaml:"ca_mode"`
+	CABundleURL     string `yaml:"ca_bundle_url"`     // used when ca_mode=bundle_url
 	CABundleRefresh string `yaml:"ca_bundle_refresh"` // e.g. "1h"; used when ca_mode=bundle_url
-	SPIFFESocket string `yaml:"spiffe_socket"`    // used when ca_mode=spiffe
+	SPIFFESocket    string `yaml:"spiffe_socket"`     // used when ca_mode=spiffe
 
 	// PQC signing (ML-DSA-65, FIPS 204)
 	// signing_algorithm controls what is sent. Verification always accepts
@@ -62,14 +62,14 @@ type IdentityConfig struct {
 }
 
 type TransportConfig struct {
-	PeerPort          int    `yaml:"peer_port"`
-	PeerBind          string `yaml:"peer_bind"`
-	MaxMessageBytes   int    `yaml:"max_message_bytes"`
-	HandshakeRateLimit int   `yaml:"handshake_rate_limit"`
-	StreamRateLimit   int    `yaml:"stream_rate_limit"`
-	DialTimeout       string `yaml:"dial_timeout"`
+	PeerPort           int    `yaml:"peer_port"`
+	PeerBind           string `yaml:"peer_bind"`
+	MaxMessageBytes    int    `yaml:"max_message_bytes"`
+	HandshakeRateLimit int    `yaml:"handshake_rate_limit"`
+	StreamRateLimit    int    `yaml:"stream_rate_limit"`
+	DialTimeout        string `yaml:"dial_timeout"`
 	SessionIdleTimeout string `yaml:"session_idle_timeout"`
-	ClockSkewWindow   string `yaml:"clock_skew_window"`
+	ClockSkewWindow    string `yaml:"clock_skew_window"`
 }
 
 type SeedConfig struct {
@@ -113,20 +113,20 @@ type AdmissionConfig struct {
 }
 
 type PolicyConfig struct {
-	PolicyFile              string   `yaml:"policy_file"`
-	EnforceMode             string   `yaml:"enforce_mode"`
-	DryRun                  bool     `yaml:"dry_run"`
-	MaxNewRulesPerMinute    int      `yaml:"max_new_rules_per_minute"`
-	ProtectedCIDRs          []string `yaml:"protected_cidrs"`
-	ProtectSelfPlanes       bool     `yaml:"protect_self_planes"`
-	DenyTargetingAdminEndpoint bool  `yaml:"deny_targeting_admin_endpoint"`
+	PolicyFile                 string   `yaml:"policy_file"`
+	EnforceMode                string   `yaml:"enforce_mode"`
+	DryRun                     bool     `yaml:"dry_run"`
+	MaxNewRulesPerMinute       int      `yaml:"max_new_rules_per_minute"`
+	ProtectedCIDRs             []string `yaml:"protected_cidrs"`
+	ProtectSelfPlanes          bool     `yaml:"protect_self_planes"`
+	DenyTargetingAdminEndpoint bool     `yaml:"deny_targeting_admin_endpoint"`
 }
 
 type EnforcementConfig struct {
-	NFTables     NFTablesConfig     `yaml:"nftables"`
-	Kubernetes   KubernetesConfig   `yaml:"kubernetes"`
-	Cilium       CiliumConfig       `yaml:"cilium"`
-	SIEMWebhook  SIEMWebhookConfig  `yaml:"siem_webhook"`
+	NFTables    NFTablesConfig    `yaml:"nftables"`
+	Kubernetes  KubernetesConfig  `yaml:"kubernetes"`
+	Cilium      CiliumConfig      `yaml:"cilium"`
+	SIEMWebhook SIEMWebhookConfig `yaml:"siem_webhook"`
 }
 
 type NFTablesConfig struct {
@@ -176,12 +176,12 @@ type HTTPRateAnomalyDetector struct {
 }
 
 type ObsConfig struct {
-	LogLevel    string `yaml:"log_level"`
-	LogFormat   string `yaml:"log_format"`
-	MetricsBind string `yaml:"metrics_bind"`
-	OTELEndpoint string `yaml:"otel_endpoint"`
+	LogLevel        string  `yaml:"log_level"`
+	LogFormat       string  `yaml:"log_format"`
+	MetricsBind     string  `yaml:"metrics_bind"`
+	OTELEndpoint    string  `yaml:"otel_endpoint"`
 	TraceSampleRate float64 `yaml:"trace_sample_rate"`
-	HealthBind  string `yaml:"health_bind"`
+	HealthBind      string  `yaml:"health_bind"`
 }
 
 type HardenConfig struct {
@@ -253,10 +253,10 @@ func (c *Config) Validate() error {
 
 	// PQC signing algorithm
 	validSigningAlgos := map[string]bool{
-		"":                          true,
-		"ed25519":                   true,
+		"":                         true,
+		"ed25519":                  true,
 		"hybrid-ed25519-ml-dsa-65": true,
-		"ml-dsa-65":                 true,
+		"ml-dsa-65":                true,
 	}
 	if !validSigningAlgos[c.Identity.SigningAlgorithm] {
 		ve.add(fmt.Sprintf("identity.signing_algorithm: must be ed25519|hybrid-ed25519-ml-dsa-65|ml-dsa-65, got %q",

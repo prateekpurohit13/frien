@@ -1,6 +1,6 @@
 # frien — Implementation Task Checklist
 
-Last updated: 2026-06-14 (Phase 0 scaffold complete + PQC hybrid signatures implemented)
+Last updated: 2026-06-18 (Phase 0 complete + Phase 1 secure node foundation complete)
 
 Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
@@ -32,11 +32,11 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 - [x] Correct folder structure created (see `docs/folder-structure.md`)
 - [x] `.env.example` created at repo root
 - [x] `Makefile` created with standard targets
-- [ ] `.gitignore` updated (key files, binaries, WAL data)
+- [x] `.gitignore` updated (key files, certs, binaries, WAL/db/snapshot/socket data, SBOM artifacts)
 
 ### gRPC Contract Definition
 - [x] `proto/v1/frien.proto` — all message types and services defined
-- [ ] `pkg/proto/v1/` — generated Go code from proto (requires protoc toolchain)
+- [x] `pkg/proto/v1/` — generated Go code from proto (`make proto-gen`; protoc-gen-go + protoc-gen-go-grpc)
 - [x] `internal/version/version.go` — protocol version constants and negotiation
 
 ### Go Package Skeleton (Phase 0 / Phase 1 start)
@@ -51,44 +51,49 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 ### Build Verification
 - [x] `go build ./...` — passes cleanly
 - [x] `go test -race ./internal/...` — all tests pass
-- [ ] `golangci-lint` configured (`.golangci.yaml`)
-- [ ] SBOM generation (`syft`) step drafted
-- [ ] Signed artifact workflow drafted (`cosign`)
+- [x] `golangci-lint` configured (`.golangci.yml`, schema v2; pinned in CI)
+- [x] SBOM generation (`syft`) step drafted (CI `supply-chain` job)
+- [x] Signed artifact workflow drafted (`cosign` keyless via OIDC)
 
 ### CI Baseline
-- [ ] `govulncheck` integrated
-- [ ] `golangci-lint` configured
-- [ ] SBOM + signing CI steps drafted
+- [x] `govulncheck` integrated (CI `vuln` job)
+- [x] `golangci-lint` configured (CI `lint` job, pinned version)
+- [x] SBOM + signing CI steps drafted (CI `supply-chain` job: syft SBOM, grype scan, cosign sign)
+- [x] `.github/workflows/ci.yml` — build/test(race)/proto-freshness/lint/vuln/sbom/sign
 
 ### TLA+ Spec Skeleton
-- [ ] `specs/frien.tla` — skeleton covering membership, quorum, quarantine, revocation
+- [x] `specs/frien.tla` — skeleton covering membership, quorum, quarantine, revocation with safety invariants (QuorumSafety, NoSelfLockout, Quarantine/RevocationExcludesQuorum)
 
 ---
 
 ## Phase 1: Secure Node Foundation (Sprint 1)
 
 ### Config Package
-- [ ] `internal/config/config.go` — typed Config struct
-- [ ] `internal/config/loader.go` — YAML + env override loading
-- [ ] `internal/config/validator.go` — fail-fast validation
-- [ ] `internal/config/config_test.go` — unit tests (missing required, env override, secret injection)
+- [x] `internal/config/config.go` — typed Config struct
+- [x] `internal/config/loader.go` — YAML + env override loading + defaults
+- [x] validation — fail-fast `Validate()` lives in `config.go` (consolidated, not a separate validator.go)
+- [x] `internal/config/config_test.go` — unit tests (missing required, env override, secret injection)
 
 ### Logger Package
-- [ ] `internal/logger/logger.go` — structured logger initialization (slog)
-- [ ] `internal/logger/logger_test.go`
+- [x] `internal/logger/logger.go` — structured logger initialization (zerolog; see note below)
+- [ ] `internal/logger/logger_test.go` — (Init is a thin wrapper; covered indirectly)
+
+> Note: the project standardized on `zerolog` (not stdlib `slog`) for structured logging; this is reflected across all packages.
 
 ### Version Package
-- [ ] `internal/version/version.go` — proto version constants, software version
-- [ ] `internal/version/version_test.go`
+- [x] `internal/version/version.go` — proto version constants, software version, Negotiate/IsSupported
+- [x] `internal/version/version_test.go`
 
-### Storage Package (skeleton)
-- [ ] `internal/storage/wal.go` — append-only WAL with hash-linked entries
-- [ ] `internal/storage/bbolt.go` — bbolt initialization and bucket creation
-- [ ] `internal/storage/snapshot.go` — snapshot load/save
-- [ ] `internal/storage/storage_test.go`
+### Storage Package
+- [x] `internal/storage/wal.go` — append-only hash-linked WAL (magic+len+prevhash+payload+selfhash); torn-tail recovery; tamper detection
+- [x] `internal/storage/bbolt.go` — bbolt init, all buckets, schema-version stamp + newer-schema refusal
+- [x] `internal/storage/snapshot.go` — atomic snapshot save (temp+rename) / load-latest
+- [x] `internal/storage/store.go` — Store composes WAL+bbolt+snapshots behind one lifecycle
+- [x] `internal/storage/storage_test.go` — append/replay, cross-restart chain, tamper, torn-tail, snapshots, schema guard
 
 ### Node Identity
-- [ ] `internal/identity/identity.go` — cert loading, fingerprint, renewal check
+- [x] `internal/identity/identity.go` — cert/key load, ed25519 signer derivation, fingerprint, CN check, renewal/expiry checks, CA pool loader
+- [x] `internal/identity/identity_load_test.go` — load, CN mismatch, non-ed25519 rejection, renewal thresholds, expiry, missing file
 - [x] `internal/identity/canonical.go` — deterministic canonical signed content (SHA-256, length-prefixed)
 - [x] `internal/identity/signer.go` — `Signer` interface; Ed25519Signer, MLDSASigner (circl), HybridSigner
 - [x] `internal/identity/verifier.go` — `Verify()` with hybrid policy (PQC preferred, hard reject on corrupt PQC)
@@ -107,29 +112,38 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 - [ ] Phase 2: TLS `tls.X25519MLKEM768` wired into `internal/transport/quic.go` (when transport is built)
 - [ ] Phase 7+: Composite X.509 cert support (CA ecosystem must mature first)
 
-### gRPC Server Skeleton
-- [ ] `internal/grpc/server.go` — gRPC server setup
-- [ ] `internal/grpc/api.go` — AdminService registration
-- [ ] `internal/middleware/chain.go` — interceptor chain
-- [ ] `internal/middleware/panic_recovery.go`
-- [ ] `internal/middleware/request_logger.go`
+### gRPC Server + Admin API
+- [x] `internal/grpc/server.go` — server setup, Unix socket (stale-socket-safe) + optional TLS TCP, lifecycle (Start/Stop)
+- [x] `internal/grpc/api.go` — AdminService; GetStatus implemented; later RPCs return clear Unimplemented (named phase)
+- [x] `internal/grpc/server_test.go` — GetStatus over real socket, degraded-on-expiry, Unimplemented, non-socket-file guard
+- [x] `internal/middleware/chain.go` — composes the interceptor chain (extensible for later phases)
+- [x] `internal/middleware/panic_recovery.go` — panic → INTERNAL, stack logged internally only
+- [x] `internal/middleware/request_logger.go` — request ID, x-request-id trailer, method/caller/code/latency log
+- [x] `internal/middleware/context.go` — request-ID context helpers
+- [x] `internal/middleware/middleware_test.go`
+
+### Operation Log over WAL (Phase 1 addition)
+- [x] `internal/oplog/oplog.go` — signed lifecycle OperationEnvelopes appended to WAL; verifying replay (payload hash + ed25519); per-node seq continues across restarts
+- [x] `internal/oplog/oplog_test.go` — append/recover across restart, seq continuity, tampered-record rejection
 
 ### Main Daemon Bootstrap
-- [ ] `cmd/friend/main.go` — compact bootstrap (load config, init logger, init storage, init identity, register gRPC, start server, graceful shutdown)
+- [x] `cmd/friend/main.go` — thin `run()`: config → logger → storage → identity → oplog recover+start → health → admin gRPC → ready → signal → graceful shutdown
+- [x] `cmd/frienctl/main.go` — `version` + `status` (dials admin socket, prints GetStatus); socket resolved via --socket/--config/default
 
 ### Errors Package
-- [ ] `internal/errors/errors.go` — AppError types, gRPC status mapping
-- [ ] `internal/errors/errors_test.go`
+- [x] `internal/errors/errors.go` — AppError types, gRPC status mapping, sentinel constructors
+- [x] `internal/errors/errors_test.go`
 
 ### Health Package
-- [ ] `internal/health/health.go` — readiness and liveness handlers
+- [x] `internal/health/health.go` — `/healthz` liveness, `/readyz` readiness gating, local HTTP server with graceful shutdown
+- [x] `internal/health/health_test.go`
 
 ### Phase 1 Exit Criteria
-- [ ] One node starts, exposes health endpoint, writes WAL entries, and shuts down cleanly
-- [ ] `frienctl status` returns node status via admin socket
-- [ ] Config validation rejects missing required fields with clear diagnostic
-- [ ] WAL replay recovers state on restart
-- [ ] All unit tests pass with race detector
+- [x] One node starts, exposes health endpoint, writes WAL entries, and shuts down cleanly — verified via smoke test
+- [x] `frienctl status` returns node status via admin socket — verified
+- [x] Config validation rejects missing required fields with clear diagnostic
+- [x] WAL replay recovers state on restart — verified (2 records recovered, seq continues; corrupt WAL refuses start)
+- [x] All unit tests pass with race detector (`go test -race ./...`)
 
 ---
 
@@ -247,20 +261,27 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ## Current Status
 
-**Completed:** Phase 0 — all documentation + project scaffold + core package skeleton ✓
+**Completed:** Phase 0 (definition + safety baseline + CI) ✓ and Phase 1 (secure node foundation) ✓
 
 **Verified:**
 - `go build ./...` — clean
-- `go test -race ./internal/...` — all pass (errors, config, version packages)
+- `go vet ./...` — clean
+- `go test -race ./...` — all pass (config, errors, version, identity, storage, middleware, health, grpc, oplog)
+- End-to-end smoke: daemon starts → `frienctl status` over socket → `/healthz`+`/readyz` 200 → SIGTERM clean shutdown
+- Restart smoke: WAL replay recovers prior lifecycle records (seq continues); corrupt WAL → daemon refuses to start
 
-**Next step (Phase 1):** Implement `internal/storage` (WAL + bbolt), `internal/identity` (cert load/renewal), `internal/grpc` (server + interceptor chain), `internal/health`, and wire them into `cmd/friend/main.go` so a real node can start, serve health, and write WAL entries.
+**Next step (Phase 2):** QUIC + mTLS peer transport, protocol-version negotiation at handshake, SWIM membership, admission control (budgets/coalescing/shedding), clock-skew window, and the deterministic simulation harness. Wire `tls.X25519MLKEM768` into the transport at this point. `ListPeers` becomes implementable once membership exists.
 
 ---
 
 ## Known Limitations and Notes
 
-- TLA+ spec skeleton is planned but not yet drafted
-- `frienctl` CLI binary is not yet implemented; admin API will be tested via grpcurl initially
+- `golangci-lint` and `govulncheck` are not installed in the local dev image; both run in CI (`.github/workflows/ci.yml`). `.golangci.yml` uses schema v2 (version pinned in CI).
+- TLA+ spec (`specs/frien.tla`) is a Phase 0 skeleton: state + safety invariants are defined; the `Next` action relation is abstract and will be refined as each protocol (membership, quorum, quarantine, revocation) is implemented. Not yet wired into a TLC model-check CI job.
+- Admin API has no Auth/RBAC interceptor yet (Unix-socket file permissions are the current access control). Auth, RBAC, rate-limit, validation, and audit interceptors slot into `middleware.Chain` in later phases.
+- `oplog` request/op IDs use random tokens, not ULIDs; a ULID is adopted in Phase 3 where lexical time-ordering matters. Cross-node signature verification on replay is deferred to the Phase 4 verify layer (all Phase 1 WAL records are self-authored).
+- Envelope signing in `oplog` is ed25519-only for now; PQC (ML-DSA-65) envelope signing over the wire is wired with transport in Phase 2+.
+- `frienctl` implements `version` and `status`; remaining subcommands track their server-side RPCs.
 - nftables adapter requires Linux; tests on non-Linux CI should skip enforcer tests via build tags
 - Kubernetes adapter deferred to Phase 7
 - OPA/Rego policy integration deferred until YAML policy engine is stable
