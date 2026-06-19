@@ -257,6 +257,37 @@ func TestStore_OpenCloseReopen(t *testing.T) {
 	}
 }
 
+func TestStore_MetaGetPut(t *testing.T) {
+	base := t.TempDir()
+	opts := Options{
+		WALDir:      filepath.Join(base, "wal"),
+		DBPath:      filepath.Join(base, "state.db"),
+		SnapshotDir: filepath.Join(base, "snapshots"),
+	}
+	s, err := Open(opts, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if v, err := s.MetaGet("absent"); err != nil || v != nil {
+		t.Fatalf("absent key: want (nil,nil), got (%v,%v)", v, err)
+	}
+	if err := s.MetaPut(MetaKeyHLC, []byte("ts-1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	_ = s.Close()
+
+	// Value survives reopen.
+	s2, err := Open(opts, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	if v, err := s2.MetaGet(MetaKeyHLC); err != nil || string(v) != "ts-1" {
+		t.Fatalf("after reopen: want ts-1, got (%q,%v)", v, err)
+	}
+}
+
 func TestSnapshot_SaveLoadLatest(t *testing.T) {
 	dir := t.TempDir()
 

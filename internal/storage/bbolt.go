@@ -45,6 +45,10 @@ const SchemaVersion = 1
 
 const metaKeySchemaVersion = "schema_version"
 
+// MetaKeyHLC is the meta-bucket key under which the daemon persists the Hybrid
+// Logical Clock so it cannot regress across a restart.
+const MetaKeyHLC = "hlc"
+
 // openBolt opens (creating if absent) the bbolt database at path, ensures every
 // required bucket exists, and records/validates the schema version. A timeout
 // guards against a stale lock from a previous process holding the file.

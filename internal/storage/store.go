@@ -68,6 +68,35 @@ func (s *Store) SaveSnapshot(snap *Snapshot) (string, error) {
 	return SaveSnapshot(s.snapshotDir, snap)
 }
 
+// MetaGet reads a value from the meta bucket, returning (nil, nil) if absent.
+// It is the generic key-value seam the daemon uses to persist small singletons
+// such as the Hybrid Logical Clock, keeping the storage layer free of any
+// dependency on the types it stores.
+func (s *Store) MetaGet(key string) ([]byte, error) {
+	var out []byte
+	err := s.DB.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket([]byte(BucketMeta)).Get([]byte(key)); v != nil {
+			out = append([]byte(nil), v...)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage: meta get %q: %w", key, err)
+	}
+	return out, nil
+}
+
+// MetaPut writes a value into the meta bucket.
+func (s *Store) MetaPut(key string, val []byte) error {
+	err := s.DB.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(BucketMeta)).Put([]byte(key), val)
+	})
+	if err != nil {
+		return fmt.Errorf("storage: meta put %q: %w", key, err)
+	}
+	return nil
+}
+
 // Close releases both the bbolt handle and the WAL file. Both are attempted even
 // if the first fails, and the first error encountered is returned.
 func (s *Store) Close() error {

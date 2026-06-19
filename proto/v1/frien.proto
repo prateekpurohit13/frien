@@ -102,6 +102,14 @@ message EnforcementDecision {
   bool            rolled_back              = 18;
 }
 
+// Retraction is the payload of an op_type="retraction" envelope. It withdraws a
+// prior op authored by the same node; the projection layer applies it only when
+// the retraction is signed by the original author and carries a higher seq.
+message Retraction {
+  string target_op_id = 1;  // op_id of the op being retracted
+  string reason       = 2;
+}
+
 message PeerState {
   string          node_id          = 1;
   string          role             = 2;  // "edge" | "core" | "gateway"

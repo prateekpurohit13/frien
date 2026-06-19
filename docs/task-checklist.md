@@ -183,46 +183,52 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 **State model (see FRIEN_ARCHITECTURE §10 Layer 3 + database.md "CRDT State Model"):** the replicated state is a **grow-only set of immutable signed ops keyed by `op_id`; merge is pure set-union**. Retraction, equivocation, and quorum-counting are **projections** over the set (pure functions of it); record TTL expiry additionally reads the local clock, so it converges as clocks agree — the set itself always converges by union. None of these are part of the merge. This is chosen over OR-Set (unnecessary add-wins/tombstone machinery that would collapse the distinct-identity quorum signal) and over keep-one LWW-element-set (which would discard equivocation evidence). Causal `parents` are optional and not gated on in Phase 3.
 
-### Sprint 3a — HLC (foundation)
-- [ ] `internal/crdt/hlc.go` — Hybrid Logical Clock: `Now()` (send), `Update(remote)` (receive), bounded physical-drift clamp, monotonicity
-- [ ] HLC persistence to bbolt `meta` so the clock never regresses across restart
-- [ ] Wire HLC into the `transport.clock_skew_window` rejection (the Phase 2 deferral) — reject ops whose origin HLC implies skew beyond the window, measured against local time
-- [ ] `internal/crdt/hlc_test.go` — monotonicity, causal update, drift clamp, restart-no-regression
+### Sprint 3a — HLC (foundation) ✓
+- [x] `internal/crdt/hlc.go` — Hybrid Logical Clock: `Now()` (send), `Update(remote)` (receive, drift-clamped), `CheckSkew` (ingress gate), `Snapshot`; monotonic even when physical clock regresses; counter-overflow rolls into next ms; `Timestamp` String/Parse handles hyphenated RFC3339 wall + reverse-DNS node ids
+- [x] HLC persistence substrate — `storage.MetaGet`/`MetaPut` + `MetaKeyHLC`; `Clock` seeds from `WithInitial(Snapshot())`; restart-no-regression tested at clock level (daemon read/write wiring lands in 3d when the clock is instantiated)
+- [x] `CheckSkew(remote, window)` is the `transport.clock_skew_window` mechanism (rejects ops outside the window either direction); call site is op ingress in 3d
+- [x] `internal/crdt/hlc_test.go` — round-trip parse, compare, monotonicity (stuck + backward physical clock), causal update, drift rejection, skew gate, restart-no-regression
 
-### Sprint 3b — Op set + projections (the core CRDT)
-- [ ] `internal/crdt/opset.go` — grow-only set keyed by `op_id`; `Merge` = union; `Add(env)` idempotent; in-memory + bbolt-backed
-- [ ] `internal/crdt/project.go` — projections: `present(op)` = `local_now ≥ expires_at` (origin-declared, policy-capped — in the op, not receive-anchored) AND not author-retracted; active-set query by indicator/scope. Keep record-TTL distinct from the quorum window (the latter is local-receive-time, Phase 5)
-- [ ] `internal/crdt/retraction.go` — author-only retraction (verify `signed_by` == author, `seq` strictly greater); `op_type: "retraction"` referencing target `op_id`
-- [ ] `internal/crdt/equivocation.go` — `(node_id → seq → op_hash)` index; emit `EquivocationProof` (two signed envelopes) on collision
-- [ ] `internal/crdt/crdt_test.go` — behavioral tests: expiry by origin `expires_at` (late-delivered expired op never present, no resurrection); retraction LWW-by-seq (author-only, lower/equal seq ignored); equivocation evidence preserved (both ops retained, proof emitted — not overwritten); replay (duplicate `op_id`) rejected
-- [ ] `internal/crdt/convergence_test.go` — **CvRDT join-semilattice property tests** (executable proof of the union-merge claim; *Database Internals* Ch 11 / DDIA Ch 5), randomized inputs via stdlib `testing/quick` with a fixed seed (no new dependency):
-  - [ ] **Idempotence** — `Merge(a, a) == a`
-  - [ ] **Commutativity** — `Merge(a, b) == Merge(b, a)`
-  - [ ] **Associativity** — `Merge(Merge(a, b), c) == Merge(a, Merge(b, c))`
-  - [ ] **Monotonicity / inflationary join** — `a ⊆ Merge(a, b)` and `b ⊆ Merge(a, b)` (state never shrinks under merge)
-  - [ ] **Order-independent convergence** — N ops delivered to K replicas under randomized shuffles, duplicates, and dropped-then-anti-entropy re-delivery all reach a byte-identical materialized set (compare via canonical state hash)
-  - [ ] All assertions compare via the canonical state serialization (sorted by `op_id`, fixed encoding) so equality is well-defined
+### Sprint 3b — Op set + projections (the core CRDT) ✓
+- [x] `internal/crdt/opset.go` — grow-only set keyed by `op_id`; `Merge` = union; `Add` idempotent on replay; `CanonicalHash` (sorted op_id + payload_hash); in-memory (durability via WAL replay, driven by daemon — no `storage` import, no cycle)
+- [x] `internal/crdt/project.go` — `present(op)` = not a control op AND not author-retracted AND `now < expires_at` (origin-declared, in the immutable payload — no resurrection of late-delivered expired ops); `ActiveThreats`, `PresentOps`, `IsPresent`. Record-TTL kept distinct from the quorum window (Phase 5, local-receive-time)
+- [x] `internal/crdt/retraction.go` — author-only retraction (`node_id` == target author AND `seq` strictly greater); `op_type: "retraction"` payload = new `Retraction{target_op_id}` proto message
+- [x] `internal/crdt/equivocation.go` — `(node_id → seq → op_id)` index; emits `MisbehaviorProof{op_a, op_b}` on a fork; both ops retained (evidence preserved); `detected_by/at` left for Phase 4 verify
+- [x] `proto/v1/frien.proto` — added `Retraction` message; regenerated `pkg/proto/v1`
+- [x] `internal/crdt/crdt_test.go` — behavioral: replay idempotent; expiry by origin `expires_at` (late expired op never present); retraction LWW-by-seq (author-only, lower/equal seq ignored, non-author ignored); equivocation evidence preserved (both ops retained, proof carries both); malformed-envelope rejection
+- [x] `internal/crdt/convergence_test.go` — **CvRDT join-semilattice property tests** via stdlib `testing/quick` (500 iters, fixed seed, custom `opList` generator over a shared id space; no new dependency):
+  - [x] **Idempotence** — `Merge(a, a) == a`
+  - [x] **Commutativity** — `Merge(a, b) == Merge(b, a)`
+  - [x] **Associativity** — `Merge(Merge(a, b), c) == Merge(a, Merge(b, c))`
+  - [x] **Monotonicity / inflationary join** — state never shrinks under merge
+  - [x] **Order-independent convergence** — 3 replicas, different orders + duplicate re-delivery → identical canonical hash
+  - [x] equality via `CanonicalHash` (sorted by `op_id`, fixed encoding)
 
-### Sprint 3c — Scope router
-- [ ] `internal/scope/router.go` — parse `local`/`zone:<name>`/`fleet`; subscription set per node
-- [ ] Egress + ingress scope enforcement (defense in depth): never send `local`; drop ops for unsubscribed scopes on receipt
-- [ ] `internal/scope/router_test.go`
+### Sprint 3c — Scope router ✓
+- [x] `internal/scope/router.go` — `Parse` (`local`/`zone:<name>`/`fleet`, zone name validated alnum+hyphen ≤64); `Router` with per-node subscription set (own zone + fleet always; extra zones for aggregators)
+- [x] Egress + ingress scope enforcement (defense in depth): `ShouldSend` never sends `local`, sends `zone` only to in-zone peers; `Accept` drops received `local` and unsubscribed-zone ops
+- [x] `internal/scope/router_test.go` — parse/round-trip/validation, egress matrix, ingress matrix, aggregator multi-zone subscription
 
-### Sprint 3d — Per-scope anti-entropy + gossip wiring
-- [ ] `internal/crdt/merkle.go` — per-scope Merkle root over op_ids (incremental, not recompute-all); root exposed per subscribed scope
-- [ ] `internal/crdt/antientropy.go` — per-scope root-hash exchange → set-difference reconcile, bounded below by latest common checkpoint
-- [ ] Wire the QUIC-backed `membership.Prober` and the gossip pump (ship membership Updates + CRDT op deltas + revocation hints over `PeerService.Gossip`/`AntiEntropy` streams) — closes the Phase 2 deferral
+### Sprint 3d — Per-scope anti-entropy engine ✓ (algorithmic core)
+- [x] `internal/crdt/merkle.go` — per-scope op index (maintained on `Add`); `ScopeDigest` (root + count), `OpIDsInScope`, `Scopes`; retraction inherits target scope, control ops are fleet
+- [x] `internal/crdt/antientropy.go` — `SyncScope` (per-scope root short-circuit) → `Reconcile` (set-difference pull, scope-gated via `AcceptFunc`, surfaces equivocation proofs); `EnvelopeScope` for ingress acceptance. Checkpoint floor is a documented seam (Phase 4)
+- [x] `internal/crdt/simulation_test.go` — deterministic gossip sim (4 nodes, 2 zones, seeded pairing + 30% drop + 60-round partition/heal) proving every Phase 3 exit criterion below
+
+### Sprint 3e — Live integration (remaining; needs multi-process test)
+- [ ] Wire the QUIC-backed `membership.Prober` and the gossip pump (ship membership Updates + CRDT op deltas + revocation hints over raw-QUIC `Gossip`/`AntiEntropy` streams) — closes the Phase 2 deferral
+- [ ] Daemon bootstrap: instantiate `crdt.Clock` (load/persist via `storage.MetaGet/Put`+`MetaKeyHLC`), `OpSet`, `scope.Router`, SWIM `Run`, gossip loop; call `CheckSkew` + `admission` at op ingress
 - [ ] Inbound op admission: route received ops through `internal/admission` (rate/size/per-scope cap, shed on overflow) before they enter the set
 - [ ] Per-peer HLC watermark vector (bbolt `peer_watermark`) for the compaction stable cut
 - [ ] `ListPeers` admin RPC implemented against `membership.MemberList`
+- [ ] Live 3–5 node QUIC cluster integration test (the multi-process counterpart to the in-process sim)
 
-### Phase 3 Exit Criteria
-- [ ] Zone-scoped threat op converges on in-scope peers; out-of-scope peer never receives it (enforced on both egress and ingress)
-- [ ] 3–5 node local cluster syncs a zone-scoped op within 2s (architecture target)
-- [ ] Replayed op (duplicate `op_id`) is rejected; op outside the clock-skew window is rejected
-- [ ] Two ops at the same `(node_id, seq)` with different content produce an equivocation proof (evidence preserved, not overwritten)
-- [ ] Expired op is not resurrected by late anti-entropy
-- [ ] Deterministic simulation: union converges under reorder/drop/delay/partition (seeded, reproducible)
+### Phase 3 Exit Criteria (proven by the deterministic simulation; live-cluster counterpart is Sprint 3e)
+- [x] Zone-scoped threat op converges on in-scope peers; out-of-scope peer never receives it (enforced on both egress and ingress) — `TestGossipSimulationConvergesPerScope`
+- [~] 3–5 node local cluster syncs a zone-scoped op within 2s — proven in-process; live QUIC cluster is Sprint 3e
+- [x] Replayed op (duplicate `op_id`) rejected — `TestAddIdempotentOnReplay`; clock-skew rejection mechanism = `Clock.CheckSkew` (ingress call site in 3e)
+- [x] Two ops at same `(node_id, seq)` with different content → equivocation proof, evidence preserved — `TestEquivocationPreservesEvidence`, `TestGossipPropagatesEquivocation`
+- [x] Expired op not resurrected by late anti-entropy — asserted in the sim after partition heal
+- [x] Deterministic simulation: union converges under reorder/drop/delay/partition (seeded) — convergence suite + gossip sim
 
 ### Deferred to Phase 4 (consciously not in Phase 3)
 - Merkle **DAG** parent tracking / causal-history tamper-evidence (`parents` field stays in the envelope but is not gated on); equivocation here uses the `(node_id, seq)` index, not the DAG
