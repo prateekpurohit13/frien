@@ -214,17 +214,19 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 - [x] `internal/crdt/antientropy.go` — `SyncScope` (per-scope root short-circuit) → `Reconcile` (set-difference pull, scope-gated via `AcceptFunc`, surfaces equivocation proofs); `EnvelopeScope` for ingress acceptance. Checkpoint floor is a documented seam (Phase 4)
 - [x] `internal/crdt/simulation_test.go` — deterministic gossip sim (4 nodes, 2 zones, seeded pairing + 30% drop + 60-round partition/heal) proving every Phase 3 exit criterion below
 
-### Sprint 3e — Live integration (remaining; needs multi-process test)
-- [ ] Wire the QUIC-backed `membership.Prober` and the gossip pump (ship membership Updates + CRDT op deltas + revocation hints over raw-QUIC `Gossip`/`AntiEntropy` streams) — closes the Phase 2 deferral
-- [ ] Daemon bootstrap: instantiate `crdt.Clock` (load/persist via `storage.MetaGet/Put`+`MetaKeyHLC`), `OpSet`, `scope.Router`, SWIM `Run`, gossip loop; call `CheckSkew` + `admission` at op ingress
-- [ ] Inbound op admission: route received ops through `internal/admission` (rate/size/per-scope cap, shed on overflow) before they enter the set
-- [ ] Per-peer HLC watermark vector (bbolt `peer_watermark`) for the compaction stable cut
-- [ ] `ListPeers` admin RPC implemented against `membership.MemberList`
-- [ ] Live 3–5 node QUIC cluster integration test (the multi-process counterpart to the in-process sim)
+### Sprint 3e — Live integration ✓
+- [x] `internal/gossip/dispatch.go` — typed request/response stream protocol over raw QUIC (kind byte + length-prefixed protobuf): ping / ping-req / anti-entropy
+- [x] `internal/gossip/manager.go` — session pool: accept inbound + dial/reuse outbound; one connection serves both directions
+- [x] `internal/gossip/prober.go` — QUIC-backed `membership.Prober` (closes the Phase 2 deferral); probes piggyback membership updates incl. the node's own address
+- [x] `internal/gossip/engine.go` — orchestrator: SWIM `Run` + per-scope anti-entropy loop; `OnPing`/`OnPingReq`/`OnAntiEntropy` handlers; `ingest` (scope `Accept` + `CheckSkew` + clock `Update` + per-scope cap) before `Add`; `Publish` (HLC + seq stamped); per-peer HLC watermark recorded (in-memory, `Watermarks()`; bbolt `peer_watermark` persistence lands with Phase 4 compaction that consumes it)
+- [x] Daemon bootstrap (`cmd/friend`): `buildMesh` wires transport + `crdt.Clock` (loads/persists via `storage.MetaGet/Put`+`MetaKeyHLC`, periodic + on shutdown) + `OpSet` + `scope.Router` + engine; `CheckSkew` enforced at ingress
+- [x] `ListPeers` admin RPC implemented via `PeerSource` over the engine roster; `GetStatus` peer_count now live
+- [x] Live QUIC cluster integration tests — `TestClusterConvergesByScope` (fleet reaches all, zone only same-zone, out-of-zone excluded) and `TestClusterDetectsFailure` (node down → dead) over real QUIC+mTLS
+- Note: inbound protection is a per-scope op cap (memory bound); creation-time admission (`internal/admission`) belongs on the local `Publish`/detector path (Phase 6), not on the anti-entropy backfill path where rate-dropping would break convergence
 
 ### Phase 3 Exit Criteria (proven by the deterministic simulation; live-cluster counterpart is Sprint 3e)
 - [x] Zone-scoped threat op converges on in-scope peers; out-of-scope peer never receives it (enforced on both egress and ingress) — `TestGossipSimulationConvergesPerScope`
-- [~] 3–5 node local cluster syncs a zone-scoped op within 2s — proven in-process; live QUIC cluster is Sprint 3e
+- [x] 3–5 node local cluster syncs a zone-scoped op within 2s — `TestClusterConvergesByScope` over real QUIC converges well within the bound (~0.2s)
 - [x] Replayed op (duplicate `op_id`) rejected — `TestAddIdempotentOnReplay`; clock-skew rejection mechanism = `Clock.CheckSkew` (ingress call site in 3e)
 - [x] Two ops at same `(node_id, seq)` with different content → equivocation proof, evidence preserved — `TestEquivocationPreservesEvidence`, `TestGossipPropagatesEquivocation`
 - [x] Expired op not resurrected by late anti-entropy — asserted in the sim after partition heal
@@ -307,7 +309,7 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ## Current Status
 
-**Completed:** Phase 0 (definition + safety baseline + CI) ✓, Phase 1 (secure node foundation) ✓, and Phase 2 (peer transport, membership, admission) ✓
+**Completed:** Phase 0 ✓, Phase 1 ✓, Phase 2 ✓, and Phase 3 (scoped CRDT state mesh, incl. live QUIC gossip integration) ✓
 
 **Verified:**
 - `go build ./...` — clean

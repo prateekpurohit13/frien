@@ -132,6 +132,57 @@ func TestUnimplementedRPC_ReturnsClearError(t *testing.T) {
 	}
 }
 
+type fakePeers []PeerInfo
+
+func (f fakePeers) Peers() []PeerInfo { return f }
+
+func TestListPeers_ReturnsRoster(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	admin.SetPeerSource(fakePeers{
+		{NodeID: "node.a", Status: "alive", Addresses: []string{"10.0.0.1:7443"}, LastSeen: time.Now()},
+		{NodeID: "node.b", Status: "dead", Addresses: []string{"10.0.0.2:7443"}},
+	})
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	resp, err := frienv1.NewAdminServiceClient(conn).ListPeers(context.Background(), &frienv1.ListPeersRequest{})
+	if err != nil {
+		t.Fatalf("ListPeers: %v", err)
+	}
+	if len(resp.GetPeers()) != 2 {
+		t.Fatalf("peers = %d, want 2", len(resp.GetPeers()))
+	}
+	if resp.GetPeers()[0].GetNodeId() != "node.a" || resp.GetPeers()[0].GetStatus() != "alive" {
+		t.Errorf("peer[0] = %+v", resp.GetPeers()[0])
+	}
+	if resp.GetPeers()[0].GetLastSeen() == "" {
+		t.Error("alive peer should have a last_seen timestamp")
+	}
+}
+
+func TestListPeers_UnimplementedWithoutSource(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := startTestServer(t, src)
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err := frienv1.NewAdminServiceClient(conn).ListPeers(context.Background(), &frienv1.ListPeersRequest{})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("ListPeers without a peer source should be Unimplemented, got %v", status.Code(err))
+	}
+}
+
 func TestNewServer_NoListenerConfigured(t *testing.T) {
 	src := StatusFunc(func() StatusInfo { return StatusInfo{} })
 	admin := NewAdminService(src, false, zerolog.Nop())

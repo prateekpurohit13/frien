@@ -38,6 +38,22 @@ type StatusFunc func() StatusInfo
 // Status implements StatusSource.
 func (f StatusFunc) Status() StatusInfo { return f() }
 
+// PeerInfo is one entry of the membership roster, as reported by ListPeers. It is
+// a plain struct so the AdminService stays decoupled from the membership package.
+type PeerInfo struct {
+	NodeID    string
+	Status    string
+	Addresses []string
+	LastSeen  time.Time
+}
+
+// PeerSource supplies the live membership roster. The daemon backs it with the
+// gossip engine once the mesh is running; until then it is nil and ListPeers
+// reports Unimplemented.
+type PeerSource interface {
+	Peers() []PeerInfo
+}
+
 // AdminService implements the local admin gRPC API (proto/v1 AdminService).
 //
 // Phase 1 implements GetStatus, which needs only config, identity, and storage —
@@ -49,6 +65,7 @@ func (f StatusFunc) Status() StatusInfo { return f() }
 type AdminService struct {
 	frienv1.UnimplementedAdminServiceServer
 	src      StatusSource
+	peers    PeerSource
 	readOnly bool
 	log      zerolog.Logger
 }
@@ -58,6 +75,10 @@ type AdminService struct {
 func NewAdminService(src StatusSource, readOnly bool, log zerolog.Logger) *AdminService {
 	return &AdminService{src: src, readOnly: readOnly, log: log}
 }
+
+// SetPeerSource wires the membership roster into ListPeers once the mesh engine
+// is running.
+func (s *AdminService) SetPeerSource(p PeerSource) { s.peers = p }
 
 // GetStatus returns current node health and state. Available to any authenticated
 // caller (RBAC enforcement arrives with the Auth interceptor in a later phase).
@@ -100,7 +121,19 @@ func notYet(rpc, phase string) error {
 }
 
 func (s *AdminService) ListPeers(context.Context, *frienv1.ListPeersRequest) (*frienv1.ListPeersResponse, error) {
-	return nil, notYet("ListPeers", "Phase 2 (membership)")
+	if s.peers == nil {
+		return nil, notYet("ListPeers", "Phase 3e (mesh wiring)")
+	}
+	peers := s.peers.Peers()
+	out := make([]*frienv1.PeerState, 0, len(peers))
+	for _, p := range peers {
+		ps := &frienv1.PeerState{NodeId: p.NodeID, Status: p.Status, Addresses: p.Addresses}
+		if !p.LastSeen.IsZero() {
+			ps.LastSeen = p.LastSeen.UTC().Format(time.RFC3339)
+		}
+		out = append(out, ps)
+	}
+	return &frienv1.ListPeersResponse{Peers: out}, nil
 }
 
 func (s *AdminService) ReportThreat(context.Context, *frienv1.ReportThreatRequest) (*frienv1.ReportThreatResponse, error) {
