@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/prateekpurohit13/frien/internal/checkpoint"
 	"github.com/prateekpurohit13/frien/internal/crdt"
 	"github.com/prateekpurohit13/frien/internal/identity"
 	"github.com/prateekpurohit13/frien/internal/membership"
@@ -89,16 +90,17 @@ func (c *Config) withDefaults() {
 // and per-scope anti-entropy, and ingests ops through the scope + clock-skew
 // gates before they enter the set.
 type Engine struct {
-	cfg      Config
-	clock    *crdt.Clock
-	set      *crdt.OpSet
-	router   *scope.Router
-	swim     *membership.SWIM
-	mgr      *Manager
-	log      zerolog.Logger
-	signer   *identity.Ed25519Signer
-	keys     *verify.KeyStore
-	verifier *verify.Verifier
+	cfg            Config
+	clock          *crdt.Clock
+	set            *crdt.OpSet
+	router         *scope.Router
+	swim           *membership.SWIM
+	mgr            *Manager
+	log            zerolog.Logger
+	signer         *identity.Ed25519Signer
+	keys           *verify.KeyStore
+	verifier       *verify.Verifier
+	peerWatermarks *checkpoint.PeerWatermarks
 
 	seq atomic.Uint64
 
@@ -119,15 +121,16 @@ func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, 
 		keys.SetOperatorKey(cfg.OperatorPublicKey)
 	}
 	e := &Engine{
-		cfg:       cfg,
-		clock:     clock,
-		set:       set,
-		router:    router,
-		log:       log,
-		signer:    id.Signer(),
-		keys:      keys,
-		verifier:  verify.NewVerifier(keys),
-		watermark: make(map[string]crdt.Timestamp),
+		cfg:            cfg,
+		clock:          clock,
+		set:            set,
+		router:         router,
+		log:            log,
+		signer:         id.Signer(),
+		keys:           keys,
+		verifier:       verify.NewVerifier(keys),
+		peerWatermarks: checkpoint.NewPeerWatermarks(),
+		watermark:      make(map[string]crdt.Timestamp),
 	}
 	e.mgr = NewManager(tr, e, keys, log)
 	e.swim = membership.New(cfg.NodeID, &prober{eng: e}, membership.Config{
@@ -154,6 +157,38 @@ func (e *Engine) Start(ctx context.Context) error {
 
 // Peers returns the current membership roster (for the ListPeers admin RPC).
 func (e *Engine) Peers() []membership.Member { return e.swim.List().Members() }
+
+// LiveFleetPeers returns the node ids of currently active (alive or suspect)
+// peers, excluding self. Suspect peers are included deliberately: they are
+// not yet confirmed dead, and a fleet-scope compaction floor must stay
+// conservative against a peer that might still come back.
+func (e *Engine) LiveFleetPeers() []string {
+	members := e.swim.List().ActiveMembers()
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.NodeID != e.cfg.NodeID {
+			out = append(out, m.NodeID)
+		}
+	}
+	return out
+}
+
+// PeerWatermarks exposes the tracker of peer-acknowledged anti-entropy
+// watermarks, the input internal/checkpoint's Compactor needs to compute a
+// safe compaction floor.
+func (e *Engine) PeerWatermarks() *checkpoint.PeerWatermarks { return e.peerWatermarks }
+
+// ScopeState exposes the local op set's per-origin contiguous-seq watermark
+// for scopeKey, the other input the Compactor needs alongside peer watermarks.
+func (e *Engine) ScopeState(scopeKey string) (map[string]uint64, []string) {
+	return e.set.ScopeState(scopeKey)
+}
+
+// CompactBelow applies a compaction floor to the local op set, forwarding to
+// the underlying OpSet (see crdt.OpSet.CompactBelow for the safety contract).
+func (e *Engine) CompactBelow(cuts map[string]uint64) []*frienv1.OperationEnvelope {
+	return e.set.CompactBelow(cuts)
+}
 
 // Watermarks returns the highest HLC observed per origin node, for the Phase 4
 // compaction stable cut.
@@ -341,6 +376,9 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 		for _, env := range resp.GetMissingOps() {
 			e.ingest(env)
 		}
+		if e.peerWatermarks != nil {
+			e.peerWatermarks.Observe(m.NodeID, resp.GetHaveSeqs())
+		}
 	}
 	return true
 }
@@ -483,6 +521,9 @@ func (e *Engine) OnPingReq(ctx context.Context, pr *frienv1.PingReq) *frienv1.Ac
 // partition) drains over several rounds instead of one unbounded message; op ids
 // are iterated in sorted order, so successive rounds page forward deterministically.
 func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEntropyResponse {
+	if e.peerWatermarks != nil {
+		e.peerWatermarks.Observe(req.GetRequesterId(), req.GetHaveSeqs())
+	}
 	sc, err := scope.Parse(req.GetScope())
 	if err != nil || !e.router.ShouldSend(sc, req.GetZone()) {
 		return &frienv1.AntiEntropyResponse{}
@@ -492,7 +533,8 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 		above[id] = struct{}{}
 	}
 	missing := e.set.MissingInRange(req.GetScope(), req.GetHaveSeqs(), above, e.cfg.MaxOpsPerMsg)
-	return &frienv1.AntiEntropyResponse{MissingOps: missing}
+	haveSeqs, _ := e.set.ScopeState(req.GetScope())
+	return &frienv1.AntiEntropyResponse{MissingOps: missing, HaveSeqs: haveSeqs}
 }
 
 func (e *Engine) directProbe(ctx context.Context, addr string) bool {

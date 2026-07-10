@@ -331,8 +331,8 @@ func TestCompactBelowRemovesOldOpsBoundedByCut(t *testing.T) {
 		s.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
 	}
 	removed := s.CompactBelow(map[string]uint64{"node.a": 3})
-	if removed != 3 {
-		t.Fatalf("should compact seqs 1-3, got %d removed", removed)
+	if len(removed) != 3 {
+		t.Fatalf("should compact seqs 1-3, got %d removed", len(removed))
 	}
 	if s.Len() != 2 {
 		t.Fatalf("len = %d, want 2 (seqs 4,5 remain)", s.Len())
@@ -345,6 +345,11 @@ func TestCompactBelowRemovesOldOpsBoundedByCut(t *testing.T) {
 	for _, sq := range []uint64{4, 5} {
 		if !s.Has(fmt.Sprintf("op%d", sq)) {
 			t.Fatalf("op at seq %d should still be present", sq)
+		}
+	}
+	for i, want := range []string{"op1", "op2", "op3"} {
+		if removed[i].GetOpId() != want {
+			t.Fatalf("removed[%d] = %s, want %s (sorted by op_id)", i, removed[i].GetOpId(), want)
 		}
 	}
 }

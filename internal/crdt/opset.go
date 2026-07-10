@@ -118,7 +118,10 @@ func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (A
 // whose (node_id, seq) is at or below cuts[node_id], freeing the memory a
 // long-lived or high-churn mesh would otherwise hold forever. An origin
 // absent from cuts is left entirely untouched -- no safe cut is known for it
-// yet, which is the conservative default.
+// yet, which is the conservative default. It returns exactly the envelopes
+// removed (sorted by op_id), so the caller can build a checkpoint's tree_head
+// from precisely the ops a given cut retired, computed in the same locked
+// pass rather than via a separate read that could race with a concurrent add.
 //
 // Two things are deliberately never removed:
 //   - seqIndex entries (node_id -> seq -> op_id), which stay forever as a tiny
@@ -131,11 +134,11 @@ func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (A
 // The caller (internal/checkpoint) is responsible for only ever advancing
 // cuts to a value every currently-live peer has itself acknowledged holding;
 // CompactBelow performs no such check itself, trusting its input.
-func (s *OpSet) CompactBelow(cuts map[string]uint64) int {
+func (s *OpSet) CompactBelow(cuts map[string]uint64) []*frienv1.OperationEnvelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	removed := 0
+	var removed []*frienv1.OperationEnvelope
 	for id, env := range s.ops {
 		cut, ok := cuts[env.GetNodeId()]
 		if !ok || env.GetSeq() > cut {
@@ -146,8 +149,9 @@ func (s *OpSet) CompactBelow(cuts map[string]uint64) int {
 		}
 		delete(s.ops, id)
 		s.unindexScope(id)
-		removed++
+		removed = append(removed, env)
 	}
+	sort.Slice(removed, func(i, j int) bool { return removed[i].GetOpId() < removed[j].GetOpId() })
 	return removed
 }
 

@@ -341,6 +341,7 @@ message Ack {
 message AntiEntropyResponse {
   repeated OperationEnvelope missing_ops      = 1;
   string                     your_checkpoint  = 2;
+  map<string, uint64>       have_seqs         = 3;  // responder's own ScopeState watermark, so the requester learns it in the same round-trip
 }
 
 message NegotiateRequest {
