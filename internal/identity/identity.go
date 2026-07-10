@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"time"
@@ -135,4 +136,27 @@ func LoadCACertPool(path string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("identity: no valid certificates in CA bundle %s", path)
 	}
 	return pool, nil
+}
+
+// LoadOperatorPublicKey reads the operator root certificate at path and returns
+// its ed25519 public key, used to verify operator-signed control ops
+// (revocations, policies) against a pinned key rather than a per-node one.
+func LoadOperatorPublicKey(path string) (ed25519.PublicKey, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("identity: reading operator root cert %s: %w", path, err)
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("identity: no PEM block found in %s", path)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("identity: parsing operator root cert %s: %w", path, err)
+	}
+	pub, ok := cert.PublicKey.(ed25519.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("identity: operator root cert %s key must be ed25519, got %T", path, cert.PublicKey)
+	}
+	return pub, nil
 }

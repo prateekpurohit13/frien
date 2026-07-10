@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"flag"
 	"fmt"
@@ -235,6 +236,14 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		seeds = append(seeds, s.Address)
 	}
 
+	var operatorKey ed25519.PublicKey
+	if cfg.Identity.OperatorRootCert != "" {
+		operatorKey, err = identity.LoadOperatorPublicKey(cfg.Identity.OperatorRootCert)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
 	eng := gossip.New(gossip.Config{
 		NodeID:            cfg.Node.ID,
 		Zone:              cfg.Node.Zone,
@@ -246,7 +255,8 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		ProbeTimeout:      parseDuration(cfg.Membership.ProbeTimeout, 500*time.Millisecond),
 		SuspectMultiplier: cfg.Membership.SuspectMultiplier,
 		IndirectProbes:    cfg.Membership.MaxGossipNodes,
-	}, clock, crdt.NewOpSet(), scope.NewRouter(cfg.Node.Zone), tr, log)
+		OperatorPublicKey: operatorKey,
+	}, id, clock, crdt.NewOpSet(), scope.NewRouter(cfg.Node.Zone), tr, log)
 
 	if err := eng.Start(ctx); err != nil {
 		return nil, nil, err

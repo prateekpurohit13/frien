@@ -2,6 +2,7 @@ package gossip
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -16,9 +17,11 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/prateekpurohit13/frien/internal/crdt"
+	"github.com/prateekpurohit13/frien/internal/identity"
 	"github.com/prateekpurohit13/frien/internal/membership"
 	"github.com/prateekpurohit13/frien/internal/scope"
 	"github.com/prateekpurohit13/frien/internal/transport"
+	"github.com/prateekpurohit13/frien/internal/verify"
 	frienv1 "github.com/prateekpurohit13/frien/pkg/proto/v1"
 )
 
@@ -41,6 +44,11 @@ type Config struct {
 	ProbeTimeout      time.Duration
 	SuspectMultiplier int
 	IndirectProbes    int
+
+	// OperatorPublicKey, when set, is the pinned key used to verify
+	// operator-signed control ops (revocations, policies). Nil until an
+	// operator root cert is configured.
+	OperatorPublicKey ed25519.PublicKey
 }
 
 func (c *Config) withDefaults() {
@@ -81,13 +89,16 @@ func (c *Config) withDefaults() {
 // and per-scope anti-entropy, and ingests ops through the scope + clock-skew
 // gates before they enter the set.
 type Engine struct {
-	cfg    Config
-	clock  *crdt.Clock
-	set    *crdt.OpSet
-	router *scope.Router
-	swim   *membership.SWIM
-	mgr    *Manager
-	log    zerolog.Logger
+	cfg      Config
+	clock    *crdt.Clock
+	set      *crdt.OpSet
+	router   *scope.Router
+	swim     *membership.SWIM
+	mgr      *Manager
+	log      zerolog.Logger
+	signer   *identity.Ed25519Signer
+	keys     *verify.KeyStore
+	verifier *verify.Verifier
 
 	seq atomic.Uint64
 
@@ -98,17 +109,27 @@ type Engine struct {
 	fanout   int // adaptive per-round peer fan-out; 0 until first round
 }
 
-func New(cfg Config, clock *crdt.Clock, set *crdt.OpSet, router *scope.Router, tr *transport.Transport, log zerolog.Logger) *Engine {
+// New assembles a gossip engine bound to id's signing key: outgoing ops are
+// signed with it, and incoming ops are verified against the sender's key,
+// learned opportunistically from established mTLS sessions (see internal/verify).
+func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, router *scope.Router, tr *transport.Transport, log zerolog.Logger) *Engine {
 	cfg.withDefaults()
+	keys := verify.NewKeyStore()
+	if len(cfg.OperatorPublicKey) > 0 {
+		keys.SetOperatorKey(cfg.OperatorPublicKey)
+	}
 	e := &Engine{
 		cfg:       cfg,
 		clock:     clock,
 		set:       set,
 		router:    router,
 		log:       log,
+		signer:    id.Signer(),
+		keys:      keys,
+		verifier:  verify.NewVerifier(keys),
 		watermark: make(map[string]crdt.Timestamp),
 	}
-	e.mgr = NewManager(tr, e, log)
+	e.mgr = NewManager(tr, e, keys, log)
 	e.swim = membership.New(cfg.NodeID, &prober{eng: e}, membership.Config{
 		ProbeInterval:     cfg.ProbeInterval,
 		ProbeTimeout:      cfg.ProbeTimeout,
@@ -147,8 +168,8 @@ func (e *Engine) Watermarks() map[string]crdt.Timestamp {
 }
 
 // Publish creates a locally-originated op, stamps it with a fresh HLC and the
-// node's next sequence number, and adds it to the local set. Signing is applied
-// by the Phase 4 verify layer; here the envelope carries identity and ordering.
+// node's next sequence number, signs it with the node's identity key, and adds
+// it to the local set.
 func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) (*frienv1.OperationEnvelope, error) {
 	if _, err := scope.Parse(scopeKey); err != nil {
 		return nil, err
@@ -173,6 +194,14 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 		Payload:      body,
 		SignedBy:     "node",
 	}
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	sig, err := e.signer.Sign(msg)
+	if err != nil {
+		return nil, fmt.Errorf("gossip: signing op %s: %w", opID, err)
+	}
+	env.KeyId = e.signer.PublicKeyID()
+	env.Signature = sig
+
 	if _, err := e.set.Add(env); err != nil {
 		return nil, err
 	}
@@ -385,6 +414,14 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 		return
 	}
 	if err := e.clock.CheckSkew(ts, e.cfg.SkewWindow); err != nil {
+		return
+	}
+	if err := e.verifier.Verify(env); err != nil {
+		if errors.Is(err, verify.ErrUnknownSigner) {
+			e.log.Debug().Str("node", env.GetNodeId()).Str("op", env.GetOpId()).Msg("op held back: signer key not yet known")
+		} else {
+			e.log.Warn().Err(err).Str("node", env.GetNodeId()).Str("op", env.GetOpId()).Msg("op rejected: signature verification failed")
+		}
 		return
 	}
 	if _, err := e.clock.Update(ts); err != nil {

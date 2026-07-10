@@ -7,6 +7,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/prateekpurohit13/frien/internal/transport"
+	"github.com/prateekpurohit13/frien/internal/verify"
 )
 
 // Manager owns peer connections: it accepts inbound sessions, dials and pools
@@ -15,6 +16,7 @@ import (
 type Manager struct {
 	tr      *transport.Transport
 	handler Handler
+	keys    *verify.KeyStore
 	log     zerolog.Logger
 
 	mu       sync.Mutex
@@ -22,10 +24,11 @@ type Manager struct {
 	ln       *transport.Listener
 }
 
-func NewManager(tr *transport.Transport, handler Handler, log zerolog.Logger) *Manager {
+func NewManager(tr *transport.Transport, handler Handler, keys *verify.KeyStore, log zerolog.Logger) *Manager {
 	return &Manager{
 		tr:       tr,
 		handler:  handler,
+		keys:     keys,
 		log:      log,
 		sessions: make(map[string]*transport.Session),
 	}
@@ -99,6 +102,9 @@ func (m *Manager) register(sess *transport.Session) {
 	m.mu.Lock()
 	m.sessions[sess.NodeID] = sess
 	m.mu.Unlock()
+	if m.keys != nil {
+		m.keys.RegisterNode(sess.NodeID, sess.PeerKey)
+	}
 }
 
 func (m *Manager) drop(nodeID string) {
