@@ -436,7 +436,12 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 	}
 	e.recordWatermark(env.GetNodeId(), ts)
 	if res.Equivocation != nil {
-		e.log.Warn().Str("offender", env.GetNodeId()).Uint64("seq", env.GetSeq()).Msg("equivocation detected")
+		crdt.StampAttribution(res.Equivocation, e.cfg.NodeID, time.Now())
+		e.log.Warn().
+			Str("offender", env.GetNodeId()).
+			Uint64("seq", env.GetSeq()).
+			Str("proof_id", res.Equivocation.GetId()).
+			Msg("equivocation detected")
 	}
 }
 

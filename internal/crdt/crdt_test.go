@@ -140,6 +140,29 @@ func TestEquivocationPreservesEvidence(t *testing.T) {
 	}
 }
 
+func TestStampAttributionFillsIdAndAttribution(t *testing.T) {
+	s := NewOpSet()
+	s.Add(threatEnv(t, "opA", "node.a", 7, ""))
+	res, _ := s.Add(threatEnv(t, "opB", "node.a", 7, ""))
+
+	before := time.Now()
+	StampAttribution(res.Equivocation, "node.detector", before)
+
+	if res.Equivocation.GetId() == "" {
+		t.Fatal("StampAttribution should assign a proof id")
+	}
+	if res.Equivocation.GetDetectedBy() != "node.detector" {
+		t.Fatalf("detected_by = %q, want node.detector", res.Equivocation.GetDetectedBy())
+	}
+	if res.Equivocation.GetDetectedAt() != before.UTC().Format(time.RFC3339) {
+		t.Fatalf("detected_at = %q, want %q", res.Equivocation.GetDetectedAt(), before.UTC().Format(time.RFC3339))
+	}
+}
+
+func TestStampAttributionNilIsNoOp(t *testing.T) {
+	StampAttribution(nil, "node.a", time.Now()) // must not panic
+}
+
 func TestAddWithLimitCapsScope(t *testing.T) {
 	s := NewOpSet()
 	for i := 0; i < 3; i++ {
