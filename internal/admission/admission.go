@@ -1,6 +1,9 @@
 package admission
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // stormFillThreshold is the node-budget fill ratio below which the controller
 // considers itself under storm and engages priority shedding. It is an internal
@@ -87,5 +90,27 @@ func (c *Controller) Admit(sig Signal) (decision Decision, count uint32) {
 	return Admit, count
 }
 
-// Expire reclaims memory held by elapsed coalescing groups; run periodically.
+// Expire reclaims memory held by elapsed coalescing groups.
 func (c *Controller) Expire() int { return c.coalescer.Expire() }
+
+// Run reclaims elapsed coalescing groups on an interval until ctx is cancelled,
+// so the controller bounds its own memory rather than relying on the caller to
+// drive Expire. A zero interval defaults to the coalesce window.
+func (c *Controller) Run(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = c.coalescer.window
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			c.Expire()
+		}
+	}
+}

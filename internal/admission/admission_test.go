@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -164,6 +165,36 @@ func TestControllerDecisionOrder(t *testing.T) {
 	// A duplicate within the window coalesces and does not spend budget.
 	if d, count := ctrl.Admit(Signal{Detector: "ssh", Key: "ssh|1.2.3.4", Severity: "high", Confidence: 0.9}); d != Coalesced || count != 2 {
 		t.Fatalf("duplicate = (%s, %d), want (coalesced, 2)", d, count)
+	}
+}
+
+func TestControllerRunReclaimsElapsedGroups(t *testing.T) {
+	clk := newFakeClock()
+	ctrl := New(Config{
+		Budget:         BudgetConfig{PerDetectorBurst: 100, PerNodeBurst: 100},
+		CoalesceWindow: 50 * time.Millisecond,
+	}, clk.Now)
+
+	ctrl.Admit(Signal{Detector: "d", Key: "k", Severity: "high", Confidence: 0.9})
+	clk.Advance(200 * time.Millisecond) // the group's window has now elapsed
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go ctrl.Run(ctx, 2*time.Millisecond)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		ctrl.coalescer.mu.Lock()
+		n := len(ctrl.coalescer.groups)
+		ctrl.coalescer.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Run did not reclaim the elapsed coalescing group")
+		case <-time.After(2 * time.Millisecond):
+		}
 	}
 }
 
