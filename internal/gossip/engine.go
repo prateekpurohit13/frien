@@ -113,8 +113,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		return err
 	}
 	go e.bootstrap(ctx)
-	go e.swim.Run(ctx)
-	go e.gossipLoop(ctx)
+	go supervise(ctx, e.log, "swim", loopRestartBackoff, e.swim.Run)
+	go supervise(ctx, e.log, "gossip", loopRestartBackoff, e.gossipLoop)
 	return nil
 }
 
