@@ -3,12 +3,18 @@ package crdt
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 
 	frienv1 "github.com/prateekpurohit13/frien/pkg/proto/v1"
 )
+
+// ErrScopeFull is returned by AddWithLimit when admitting a new op would push its
+// scope past the configured cap. It is a memory bound against a peer flooding a
+// scope, not a correctness signal; duplicates and replays are never rejected.
+var ErrScopeFull = errors.New("crdt: scope at capacity")
 
 const (
 	OpThreatRecord        = "threat_record"
@@ -46,10 +52,18 @@ func NewOpSet() *OpSet {
 	}
 }
 
-// Add admits one envelope. Re-adding a known op_id is an idempotent no-op. An op
-// that reuses an existing (node_id, seq) with a different op_id is equivocation:
-// it is still stored (the evidence must be preserved) and a proof is returned.
+// Add admits one envelope with no scope cap. See AddWithLimit.
 func (s *OpSet) Add(env *frienv1.OperationEnvelope) (AddResult, error) {
+	return s.AddWithLimit(env, 0)
+}
+
+// AddWithLimit admits one envelope, refusing a brand-new op that would push its
+// scope past maxPerScope (0 = unlimited). The duplicate check, cap check, and
+// insert are one atomic step under the set lock, so concurrent adds cannot race
+// past the cap. Re-adding a known op_id is an idempotent no-op; an op that reuses
+// an existing (node_id, seq) with a different op_id is equivocation, still stored
+// so the evidence is preserved and a proof returned.
+func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (AddResult, error) {
 	if env == nil {
 		return AddResult{}, fmt.Errorf("crdt: nil envelope")
 	}
@@ -65,6 +79,9 @@ func (s *OpSet) Add(env *frienv1.OperationEnvelope) (AddResult, error) {
 
 	if _, ok := s.ops[env.GetOpId()]; ok {
 		return AddResult{Duplicate: true}, nil
+	}
+	if maxPerScope > 0 && len(s.scopeIndex[s.scopeOf(env)]) >= maxPerScope {
+		return AddResult{}, ErrScopeFull
 	}
 
 	proof := s.detectEquivocation(env)

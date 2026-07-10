@@ -3,6 +3,9 @@ package crdt
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -134,6 +137,51 @@ func TestEquivocationPreservesEvidence(t *testing.T) {
 	// Both ops are retained — the union never discards evidence.
 	if !s.Has("opA") || !s.Has("opB") {
 		t.Fatal("both conflicting ops must remain in the set")
+	}
+}
+
+func TestAddWithLimitCapsScope(t *testing.T) {
+	s := NewOpSet()
+	for i := 0; i < 3; i++ {
+		env := threatEnv(t, fmt.Sprintf("op%d", i), "node.a", uint64(i+1), "")
+		if res, err := s.AddWithLimit(env, 3); err != nil || !res.Added {
+			t.Fatalf("op %d within cap should be admitted: res=%+v err=%v", i, res, err)
+		}
+	}
+	if _, err := s.AddWithLimit(threatEnv(t, "op3", "node.a", 4, ""), 3); !errors.Is(err, ErrScopeFull) {
+		t.Fatalf("over-cap op should return ErrScopeFull, got %v", err)
+	}
+	// A duplicate of an existing op is never rejected by the cap.
+	if res, err := s.AddWithLimit(threatEnv(t, "op0", "node.a", 1, ""), 3); err != nil || !res.Duplicate {
+		t.Fatalf("duplicate should stay an admitted no-op at cap: res=%+v err=%v", res, err)
+	}
+	if s.Len() != 3 {
+		t.Fatalf("set should hold exactly the cap of 3, got %d", s.Len())
+	}
+}
+
+func TestAddWithLimitConcurrentDoesNotOvershoot(t *testing.T) {
+	s := NewOpSet()
+	const capacity = 8
+	const writers = 64
+
+	envs := make([]*frienv1.OperationEnvelope, writers)
+	for i := range envs {
+		envs[i] = threatEnv(t, fmt.Sprintf("op%d", i), "node.a", uint64(i+1), "")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(env *frienv1.OperationEnvelope) {
+			defer wg.Done()
+			s.AddWithLimit(env, capacity)
+		}(envs[i])
+	}
+	wg.Wait()
+
+	if got := s.Len(); got != capacity {
+		t.Fatalf("concurrent adds overshot the cap: got %d, want %d", got, capacity)
 	}
 }
 

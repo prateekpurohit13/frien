@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -229,7 +230,9 @@ func (e *Engine) gossipRound(ctx context.Context) {
 }
 
 // ingest applies a received op after the scope and clock-skew gates. A bad HLC
-// or out-of-window skew is rejected before the op can enter the set.
+// or out-of-window skew is rejected before the op can enter the set, and the
+// per-scope cap is enforced atomically inside the set so concurrent ingests
+// cannot race past it.
 func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 	if !e.router.Accept(crdt.EnvelopeScope(env)) {
 		return
@@ -241,16 +244,14 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 	if err := e.clock.CheckSkew(ts, e.cfg.SkewWindow); err != nil {
 		return
 	}
-	if e.cfg.MaxOpsPerScope > 0 && !e.set.Has(env.GetOpId()) {
-		if len(e.set.OpIDsInScope(crdt.EnvelopeScope(env).String())) >= e.cfg.MaxOpsPerScope {
-			return
-		}
-	}
 	if _, err := e.clock.Update(ts); err != nil {
 		return
 	}
-	res, err := e.set.Add(env)
+	res, err := e.set.AddWithLimit(env, e.cfg.MaxOpsPerScope)
 	if err != nil {
+		if errors.Is(err, crdt.ErrScopeFull) {
+			e.log.Warn().Str("scope", crdt.EnvelopeScope(env).String()).Str("op", env.GetOpId()).Msg("op rejected: scope at capacity")
+		}
 		return
 	}
 	e.recordWatermark(env.GetNodeId(), ts)
