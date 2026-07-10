@@ -241,6 +241,10 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ## Phase 4: Tamper-Evidence, Compaction, and Revocation (Sprint 4)
 
+> See `docs/HARDENING_ROADMAP.md` for the self-audit of Phase 1-3 gaps this phase must
+> close, the membership/anti-entropy hardening patterns to retrofit alongside it, and
+> the detailed exit-criteria rationale (supersedes the summary below).
+
 - [ ] `internal/verify/signature.go` — ed25519 signature verification
 - [ ] `internal/verify/dag.go` — Merkle DAG parent tracking, root-hash exchange
 - [ ] `internal/verify/equivocation.go` — equivocation detection and proof
