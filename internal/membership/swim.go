@@ -152,13 +152,26 @@ func (s *SWIM) directProbe(ctx context.Context, target Member) bool {
 	return s.prober.Ping(pctx, target) == nil
 }
 
+// indirectProbe asks several relays to probe the target at once and returns on
+// the first success, cancelling the stragglers. Racing the relays in parallel
+// bounds detection latency at one ProbeTimeout regardless of relay count, so a
+// single slow or lossy relay path cannot by itself push a live peer to suspect.
 func (s *SWIM) indirectProbe(ctx context.Context, target Member) bool {
 	relays := s.pickRelays(target, s.cfg.IndirectProbes)
+	if len(relays) == 0 {
+		return false
+	}
+	pctx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
+	defer cancel()
+
+	results := make(chan bool, len(relays))
 	for _, relay := range relays {
-		pctx, cancel := context.WithTimeout(ctx, s.cfg.ProbeTimeout)
-		err := s.prober.PingReq(pctx, relay, target)
-		cancel()
-		if err == nil {
+		go func(relay Member) {
+			results <- s.prober.PingReq(pctx, relay, target) == nil
+		}(relay)
+	}
+	for range relays {
+		if <-results {
 			return true
 		}
 	}

@@ -144,6 +144,63 @@ func TestProbeFailureMarksSuspect(t *testing.T) {
 	}
 }
 
+// barrierProber fails every direct probe and holds each indirect probe at a
+// barrier, so ProbeOnce only completes if all relays are in flight at once.
+type barrierProber struct {
+	arrived chan struct{}
+	release chan struct{}
+	ok      bool
+}
+
+func (p barrierProber) Ping(_ context.Context, _ Member) error {
+	return context.DeadlineExceeded
+}
+
+func (p barrierProber) PingReq(ctx context.Context, _, _ Member) error {
+	p.arrived <- struct{}{}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if p.ok {
+		return nil
+	}
+	return context.DeadlineExceeded
+}
+
+func TestIndirectProbeRunsRelaysConcurrently(t *testing.T) {
+	const relays = 3
+	p := barrierProber{arrived: make(chan struct{}, relays), release: make(chan struct{}), ok: true}
+	s := New("self", p, Config{
+		ProbeInterval:  100 * time.Millisecond,
+		ProbeTimeout:   2 * time.Second,
+		IndirectProbes: relays,
+	}, zerolog.Nop(), WithRand(rand.New(rand.NewSource(1))))
+
+	s.Seed("target", []string{"target:1"})
+	for i := 0; i < relays; i++ {
+		s.Seed(string(rune('a'+i)), []string{"r:1"})
+	}
+
+	done := make(chan struct{})
+	go func() { s.ProbeOnce(context.Background()); close(done) }()
+
+	for i := 0; i < relays; i++ {
+		select {
+		case <-p.arrived:
+		case <-time.After(time.Second):
+			t.Fatalf("only %d of %d relays in flight; probes are not concurrent", i, relays)
+		}
+	}
+	close(p.release)
+	<-done
+
+	if m, _ := s.List().Get("target"); m.State != StateAlive {
+		t.Fatalf("target reachable via a relay should stay alive, got %s", m.State)
+	}
+}
+
 func TestThreeNodeDiscoveryAndFailure(t *testing.T) {
 	clk := newFakeClock()
 	w := &world{up: map[string]bool{"a": true, "b": true, "c": true}}
