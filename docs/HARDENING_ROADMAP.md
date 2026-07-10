@@ -9,7 +9,10 @@ engines, and workload-identity/attestation systems) solve the same class of prob
 No specific external project names are recorded here by policy — this file states the
 pattern and the rationale, not the source.
 
-Last updated: 2026-07-10.
+Last updated: 2026-07-11. Phase 1-3 hardening and Phase 4 (tamper-evidence, compaction,
+revocation) are both complete; see `docs/task-checklist.md`'s Phase 4 section for the
+authoritative list of what shipped and the deliberate scope decisions (DAG/parents not
+built; only fleet-scope compaction; no quorum/policy integration yet since that's Phase 5).
 
 ## Implementation status
 
@@ -43,10 +46,15 @@ commit; proto regenerated via buf, whole repo green under `go test -race`):
   floored at one. Small clusters still reach every peer (fan-out is capped at the
   available count).
 
-**Deferred to Phase 4** (needs the checkpoint/compaction machinery, not yet built): the
-per-node seq watermark assumes seqs are contiguous from 1; once compaction introduces a
-per-node checkpoint floor, `ScopeState` should baseline the watermark at that floor
-rather than 0 so a large early gap cannot inflate `have_above`.
+**Resolved in Phase 4**, differently than originally anticipated here: rather than
+baselining `ScopeState`'s watermark at an explicit per-node checkpoint floor, `seqIndex`
+and the `opScope` reverse index are now kept forever as tombstones even after
+`OpSet.CompactBelow` removes an op's bulky envelope. `ScopeState`'s contiguous-watermark
+scan reads those tombstones, so it can see straight through a compacted region instead
+of treating it as a permanent gap. This was caught by a real test failure (chained
+checkpoints test) during Phase 4, not anticipated in advance — see
+`docs/task-checklist.md`'s Phase 4 section and the commit that fixed it for the full
+story.
 
 ---
 
@@ -127,10 +135,16 @@ the membership and state-sync layers underneath them.
 
 ---
 
-## 3. Phase 4 implementation plan (tamper-evidence, compaction, revocation)
+## 3. Phase 4 implementation plan (tamper-evidence, compaction, revocation) — COMPLETE
 
-Phase 4 must close gaps #1, #4, #5, and #8 above, on top of the foundations already in
-place (watermark map, `MisbehaviorProof`, `CheckpointID` seam, `RevocationChecker` seam).
+Phase 4 closed gaps #1, #4, #5, and #6 below (gap #8's parents/DAG portion was a
+deliberate scope decision, not closed — see `docs/task-checklist.md`'s Phase 4 section
+for the rationale), on top of the foundations already in place (watermark map,
+`MisbehaviorProof`, `CheckpointID` seam, `RevocationChecker` seam). Everything below is
+the original plan, kept as the historical record of intent; see task-checklist.md for
+what was actually built and how it differs (mainly: no DAG/parents work, and compaction
+targets the in-memory `OpSet`, not a WAL, since the gossip CRDT set was never persisted
+to the WAL in the first place).
 
 ### `internal/verify`
 - Ed25519/hybrid signature verification on every replayed and peer-received op envelope

@@ -242,20 +242,71 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 ## Phase 4: Tamper-Evidence, Compaction, and Revocation (Sprint 4)
 
 > See `docs/HARDENING_ROADMAP.md` for the self-audit of Phase 1-3 gaps this phase must
-> close, the membership/anti-entropy hardening patterns to retrofit alongside it, and
+> close, the membership/anti-entropy hardening patterns retrofitted alongside it, and
 > the detailed exit-criteria rationale (supersedes the summary below).
 
-- [ ] `internal/verify/signature.go` — ed25519 signature verification
-- [ ] `internal/verify/dag.go` — Merkle DAG parent tracking, root-hash exchange
-- [ ] `internal/verify/equivocation.go` — equivocation detection and proof
-- [ ] `internal/checkpoint/checkpoint.go` — signed checkpoint creation
-- [ ] `internal/checkpoint/compact.go` — WAL and DAG compaction
-- [ ] `internal/revocation/revocation.go` — operator-signed revocation set
+- [x] `internal/verify/verify.go` — classical (ed25519) signature verification against a
+      per-node/operator `KeyStore`, wired into `gossip.Engine.ingest` before an op is
+      trusted; keys learned opportunistically from already CA-verified mTLS sessions
+- [ ] Merkle DAG parent tracking / causal-history verification — **not built**. The
+      `parents` field exists on the wire (`OperationEnvelope.parents`) but nothing reads
+      or verifies it; equivocation detection uses the `(node_id, seq)` index instead (see
+      below), which is what Phase 3 already committed to. Root-hash exchange for cheap
+      divergence detection above a shared checkpoint is also not built — anti-entropy
+      today always compares live per-scope Merkle digests (`crdt.ScopeDigest`), not a
+      checkpoint-anchored root. Left as a deliberate scope decision (see rationale below).
+- [x] Equivocation detection and proof — was already done in Phase 3
+      (`crdt.detectEquivocation`); this phase completed it: `crdt.StampAttribution` fills
+      `id`/`detected_by`/`detected_at`, called from `Engine.ingest` as soon as a proof
+      surfaces
+- [x] `internal/checkpoint/checkpoint.go` — signed, chained checkpoint creation
+      (`Build`/`Verify`, `prev_checkpoint` chain, `tree_head` over exactly what a cut
+      retired)
+- [x] `internal/checkpoint/watermarks.go` + `compactor.go` — peer-acknowledged safe-floor
+      computation (`PeerWatermarks.SafeFloor`, nil unless every live peer has been
+      directly observed) and the `Compactor` loop wired into `cmd/friend/main.go`
+- [x] `internal/crdt/opset.go` — `OpSet.CompactBelow` bounds the in-memory op set (the
+      actual replicated-state growth point; the on-disk WAL is only ever used for
+      `internal/oplog`'s self-authored lifecycle log, never for gossip ops, so there is no
+      separate "WAL compaction" to build against — see `internal/storage/wal.go`'s own
+      comment on this)
+- [x] `internal/revocation/revocation.go` — two-phase (`tainted` → `revoked`)
+      operator-signed revocation set, wired into `gossip.Engine.ingest` and the
+      previously-nil `transport.RevocationChecker` seam; a fresh revocation also actively
+      drops any already-open session
 
 ### Phase 4 Exit Criteria
-- [ ] Conflicting operations produce a misbehavior proof and quarantine
-- [ ] Revoked cert rejected mesh-wide
-- [ ] DAG and WAL stay bounded in soak test
+- [x] Conflicting operations produce a complete misbehavior proof (with attribution) —
+      `crdt.StampAttribution` + `Engine.ingest`; proven in `internal/gossip`'s
+      `TestIngestStampsEquivocationAttribution`
+- [x] Revoked cert rejected mesh-wide — proven over a live two-node QUIC cluster
+      (`TestRevocationInjectPropagatesAndAppliesLocally`) and against a real transport
+      handshake (`TestRevocationSetSatisfiesRevocationChecker`); "quarantine" in the sense
+      of excluding a revoked node from a quorum vote has no home yet since quorum/policy
+      is Phase 5 — noted as a Phase 5 dependency, not silently dropped
+- [x] Op-set size stays bounded across a compaction cycle with a partitioned-then-healed
+      peer — `SafeFloor` requires every live peer's direct confirmation before advancing,
+      by construction never compacts past what an unconfirmed live peer might still need;
+      proven end-to-end in `TestClusterCompactsFleetScopeOnceAllPeersConfirm`
+- [x] A fault-injected panic in the membership tick loop is recovered and resumes — this
+      was actually closed in the Phase 1-3 hardening pass (`internal/gossip/supervise.go`),
+      not deferred to Phase 4 as the original placeholder implied
+
+### Known Phase 4 scope decisions (not gaps left open by mistake)
+- **DAG/parents causal tracking is deliberately not implemented.** Building it properly
+  (assigning causal parents on publish, verifying every parent is locally known before
+  admission or buffering pending ops, root-hash exchange anchored to a checkpoint) is a
+  substantial standalone feature, not a small addition to what exists. The mesh's actual
+  safety properties (equivocation detection, quorum-independent per-op verification,
+  peer-acknowledged compaction) do not depend on it. Revisit if/when causal ordering
+  guarantees beyond HLC + per-node seq become a real requirement.
+- **Only the fleet scope compacts today**, not zone scopes — see `internal/checkpoint`'s
+  package doc for why (membership carries no peer-zone metadata yet, so "every live
+  peer" can't be narrowed to "every live peer that replicates this zone").
+- **Quorum-exclusion of a revoked/tainted node** ("remove from EligibleVoters") has no
+  home yet — `internal/policy`/quorum don't exist until Phase 5. Revocation today
+  guarantees transport-level rejection and mesh-wide propagation, not yet
+  enforcement-quorum exclusion.
 
 ---
 
@@ -313,7 +364,10 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 ## Current Status
 
-**Completed:** Phase 0 ✓, Phase 1 ✓, Phase 2 ✓, and Phase 3 (scoped CRDT state mesh, incl. live QUIC gossip integration) ✓
+**Completed:** Phase 0 ✓, Phase 1 ✓, Phase 2 ✓, Phase 3 (scoped CRDT state mesh, incl. live
+QUIC gossip integration) ✓, and Phase 4 (tamper-evidence, compaction, revocation) ✓ —
+see the Phase 4 section above for the one deliberate scope decision (DAG/parents causal
+tracking not built) and why it doesn't compromise the phase's actual safety goals.
 
 **Production hardening of Phases 1–3 ✓** (see `docs/HARDENING_ROADMAP.md` for the full
 gap audit and rationale). Twelve validated sprints closed every self-audited fault-
@@ -323,14 +377,34 @@ supervised (panic-recovering) gossip loops; self-managed admission coalescer exp
 atomic per-scope op cap; jittered/exponential seed rejoin; capped+paged anti-entropy
 responses; confirmation-accelerated suspicion (wire: `PeerUpdate.from_node_id`);
 range-based anti-entropy requests (wire: `have_seqs`+`have_above`); and congestion-
-adaptive (AIMD) gossip fan-out. Next: Phase 4 (see below).
+adaptive (AIMD) gossip fan-out.
+
+**Phase 4 delivered:** classical signature verification wired into gossip ingest
+(`internal/verify`), equivocation proof attribution completed (`crdt.StampAttribution`),
+peer-acknowledged compaction with signed chained checkpoints (`internal/checkpoint`),
+and two-phase operator-signed revocation wired into both gossip ingest and the
+previously-nil transport `RevocationChecker` seam (`internal/revocation`). Identity
+certificate renewal also moved from a fixed threshold to a jittered half-life model
+(`internal/identity`), closing a fleet-wide-renewal-storm risk found during this pass.
 
 **Verified:**
 - `go build ./...` — clean
 - `go vet ./...` — clean
-- `gofmt -l` — no diffs
-- `govulncheck ./...` — no vulnerabilities
-- `go test -race ./...` — all pass (config, errors, version, identity, storage, middleware, health, grpc, oplog, transport, membership, admission)
+- `gofmt` — clean (content-level; the Windows dev checkout is CRLF on disk, which makes
+  `gofmt -l` flag every file locally regardless of content — verified by stripping CR
+  before comparing)
+- `go test -race ./...` — all pass across every package (crdt, gossip, membership,
+  admission, checkpoint, revocation, verify, identity, storage, transport, grpc, oplog,
+  middleware, health, config, errors, version, scope)
+- `govulncheck ./...` — **not clean**: flags 11 Go standard-library vulnerabilities, all
+  fixed in go1.26.2 (this toolchain is go1.26.1) — an environment/toolchain gap, not
+  something introduced by this session's changes. Bumping the Go toolchain is a
+  follow-up, not done here since it's an environment change outside this task's scope.
+- Live two-node/three-node QUIC cluster integration tests: scope-based convergence,
+  failure detection, signed-op verification (accept/reject/tamper/forged-signer),
+  equivocation attribution, compaction-with-peer-confirmation, and revocation
+  inject→apply→propagate→re-apply-independently, all proven end-to-end, not just
+  unit-tested in isolation
 - End-to-end smoke: daemon starts → `frienctl status` over socket → `/healthz`+`/readyz` 200 → SIGTERM clean shutdown
 - Restart smoke: WAL replay recovers prior lifecycle records (seq continues); corrupt WAL → daemon refuses to start
 
@@ -345,7 +419,7 @@ adaptive (AIMD) gossip fan-out. Next: Phase 4 (see below).
 - `golangci-lint` and `govulncheck` are not installed in the local dev image; both run in CI (`.github/workflows/ci.yml`). `.golangci.yml` uses schema v2 (version pinned in CI).
 - TLA+ spec (`specs/frien.tla`) is a Phase 0 skeleton: state + safety invariants are defined; the `Next` action relation is abstract and will be refined as each protocol (membership, quorum, quarantine, revocation) is implemented. Not yet wired into a TLC model-check CI job.
 - Admin API has no Auth/RBAC interceptor yet (Unix-socket file permissions are the current access control). Auth, RBAC, rate-limit, validation, and audit interceptors slot into `middleware.Chain` in later phases.
-- `oplog` request/op IDs use random tokens, not ULIDs; a ULID is adopted in Phase 3 where lexical time-ordering matters. Cross-node signature verification on replay is deferred to the Phase 4 verify layer (all Phase 1 WAL records are self-authored).
+- `oplog` request/op IDs use random tokens, not ULIDs; a ULID is adopted in Phase 3 where lexical time-ordering matters. `oplog`'s own WAL replay stays self-authored-only verification (it is the node-lifecycle log, never the gossip CRDT set) — this is unrelated to the Phase 4 `internal/verify` layer, which verifies cross-node envelopes on the gossip ingest path, not `oplog`'s WAL.
 - Envelope signing in `oplog` is ed25519-only for now; PQC (ML-DSA-65) envelope signing over the wire is wired with transport in Phase 2+.
 - Peer transport uses raw QUIC streams with length-prefixed protobuf framing (reusing `pkg/proto/v1` PeerService message types as the wire schema), not gRPC-over-QUIC. gRPC remains the admin API only.
 - `transport.clock_skew_window` is validated in config but not yet enforced — it gates operations by origin HLC, which arrives with the Phase 3 CRDT layer. No placeholder is carried in the transport package.
@@ -355,3 +429,9 @@ adaptive (AIMD) gossip fan-out. Next: Phase 4 (see below).
 - nftables adapter requires Linux; tests on non-Linux CI should skip enforcer tests via build tags
 - Kubernetes adapter deferred to Phase 7
 - OPA/Rego policy integration deferred until YAML policy engine is stable
+- `internal/verify` checks the classical (ed25519) signature only; PQC (ML-DSA-65) envelope verification is not performed since PQC public keys are not yet distributed mesh-wide (tracked as a Phase 2/7 follow-up in the PQC notes above). A present `pqc_signature` field neither passes nor fails verification on its own.
+- `internal/checkpoint`'s Compactor only compacts the fleet scope; see the package doc for why zone-scope compaction needs peer-zone metadata membership doesn't carry yet.
+- Revoking/tainting a node has no effect on quorum eligibility yet — `internal/policy`'s quorum check (Phase 5) is what would exclude a tainted/revoked node from counting toward a decision. Today revocation guarantees mesh-wide propagation and transport-level rejection only.
+- An operator tool to actually mint and inject a `RevocationRecord` (a `frienctl revoke` subcommand or an admin RPC) does not exist yet; `internal/revocation.Build` and `gossip.Engine.Ingest` are the building blocks such a tool would call. Same story for `internal/checkpoint`'s `Build`/`Verify` if an operator ever needs to construct one out-of-band.
+- CA/trust-bundle rotation still uses a single static pool loaded once at startup (`identity.LoadCACertPool`), not a prepare/activate overlap window; only per-node leaf-certificate renewal timing was hardened this pass (jittered half-life). Bundle rotation safety is a Phase 7+ CA-integration concern per the existing PQC/CA staging notes.
+- `govulncheck` currently flags 11 Go standard-library vulnerabilities on this toolchain (go1.26.1; fixed in go1.26.2) — an environment gap, not a code issue; bumping the toolchain is a follow-up.

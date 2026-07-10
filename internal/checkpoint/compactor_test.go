@@ -41,7 +41,7 @@ func fleetOp(t *testing.T, opID, nodeID string, seq uint64) *frienv1.OperationEn
 	sum := sha256.Sum256(body)
 	return &frienv1.OperationEnvelope{
 		OpId: opID, OpType: crdt.OpThreatRecord, NodeId: nodeID, Seq: seq,
-		Hlc: fmt.Sprintf("1700000000000-%d-%s", seq, nodeID),
+		Hlc:         fmt.Sprintf("1700000000000-%d-%s", seq, nodeID),
 		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]), Payload: body,
 	}
 }

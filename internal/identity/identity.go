@@ -141,7 +141,7 @@ func (i *Identity) jitteredHalfLifeRenewAt() time.Time {
 func jitterHalfLife(halfLife time.Duration, fingerprint string) time.Duration {
 	sum := sha256.Sum256([]byte(fingerprint))
 	frac := float64(binary.BigEndian.Uint32(sum[:4])) / float64(math.MaxUint32) // [0, 1)
-	factor := (1 - jitterHalfLifeSpread) + 2*jitterHalfLifeSpread*frac         // [0.9, 1.1)
+	factor := (1 - jitterHalfLifeSpread) + 2*jitterHalfLifeSpread*frac          // [0.9, 1.1)
 	return time.Duration(float64(halfLife) * factor)
 }
 
