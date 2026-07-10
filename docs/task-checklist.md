@@ -315,6 +315,16 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
 **Completed:** Phase 0 ✓, Phase 1 ✓, Phase 2 ✓, and Phase 3 (scoped CRDT state mesh, incl. live QUIC gossip integration) ✓
 
+**Production hardening of Phases 1–3 ✓** (see `docs/HARDENING_ROADMAP.md` for the full
+gap audit and rationale). Twelve validated sprints closed every self-audited fault-
+tolerance gap: parallel indirect probing; local-health awareness scaling probe/suspicion
+timing; address-conflict detection on rejoin; bounded/prioritized broadcast queue;
+supervised (panic-recovering) gossip loops; self-managed admission coalescer expiry;
+atomic per-scope op cap; jittered/exponential seed rejoin; capped+paged anti-entropy
+responses; confirmation-accelerated suspicion (wire: `PeerUpdate.from_node_id`);
+range-based anti-entropy requests (wire: `have_seqs`+`have_above`); and congestion-
+adaptive (AIMD) gossip fan-out. Next: Phase 4 (see below).
+
 **Verified:**
 - `go build ./...` — clean
 - `go vet ./...` — clean

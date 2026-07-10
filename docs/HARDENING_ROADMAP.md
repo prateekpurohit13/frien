@@ -24,17 +24,29 @@ Phase 1–3 hardening that requires no wire-format change is **complete and vali
   anti-entropy responses so a partition heal drains over rounds (gap #2, response side).
 - Admission: self-managed coalescer expiry loop (gap #7).
 
-**Remaining, all requiring a proto/wire change** (deferred as a separate batch so the
-generated code and wire compatibility are handled deliberately):
+The wire-format batch is now **complete and validated** as well (each its own tested
+commit; proto regenerated via buf, whole repo green under `go test -race`):
 
-- Confirmation-accelerated suspicion — needs a confirmer identity on the membership
-  update wire type to count independent confirmations without one chatty node inflating
-  the count.
-- Request-side range-based anti-entropy — the response is now paged, but the request
-  still carries the full have-op-id list; a per-node (node_id, seq) version-vector in
-  the request would make repeat syncs exchange only the delta.
-- Congestion-adaptive gossip fan-out — scale fan-out down under drop/rate-limit feedback;
-  entangled with the anti-entropy request redesign above.
+- Confirmation-accelerated suspicion — `PeerUpdate.from_node_id` carries the asserting
+  node; each node tracks the distinct confirmers of a suspect and interpolates its
+  deadline from the full max (one asserter) down to one probe interval as confirmers
+  reach the target on a log curve. A lone or spurious accusation still waits the full
+  window; composes with the local-health scaling.
+- Request-side range-based anti-entropy — `AntiEntropyRequest.have_seqs` (per-origin-node
+  contiguous-seq watermark) + `have_above` (op-ids held above the watermarks or as
+  equivocation siblings) replace the full have-op-id list. The responder returns only
+  ops above the watermark and not already held, ordered by (node_id, seq) so gaps fill
+  in order and watermarks advance each round. Ops sharing a (node_id, seq) with a sibling
+  bypass the watermark so equivocation evidence still propagates below it.
+- Congestion-adaptive gossip fan-out — each round anti-entropies a bounded random subset
+  of peers sized by AIMD: halve on a mostly-failed round, step back up when healthy,
+  floored at one. Small clusters still reach every peer (fan-out is capped at the
+  available count).
+
+**Deferred to Phase 4** (needs the checkpoint/compaction machinery, not yet built): the
+per-node seq watermark assumes seqs are contiguous from 1; once compaction introduces a
+per-node checkpoint floor, `ScopeState` should baseline the watermark at that floor
+rather than 0 so a large early gap cannot inflate `have_above`.
 
 ---
 
