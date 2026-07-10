@@ -35,6 +35,7 @@ type Config struct {
 	MaxUpdatesPerMsg int
 	MaxOpsPerScope   int // 0 = unlimited; inbound memory bound
 	MaxOpsPerMsg     int // max ops returned per anti-entropy response; 0 => default
+	GossipFanout     int // max peers anti-entropy'd per round; 0 => default
 
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
@@ -57,6 +58,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.MaxOpsPerMsg == 0 {
 		c.MaxOpsPerMsg = 256
+	}
+	if c.GossipFanout == 0 {
+		c.GossipFanout = 4
 	}
 	if c.ProbeInterval == 0 {
 		c.ProbeInterval = time.Second
@@ -89,6 +93,9 @@ type Engine struct {
 
 	mu        sync.Mutex
 	watermark map[string]crdt.Timestamp
+
+	fanoutMu sync.Mutex
+	fanout   int // adaptive per-round peer fan-out; 0 until first round
 }
 
 func New(cfg Config, clock *crdt.Clock, set *crdt.OpSet, router *scope.Router, tr *transport.Transport, log zerolog.Logger) *Engine {
@@ -246,35 +253,123 @@ func (e *Engine) gossipLoop(ctx context.Context) {
 	}
 }
 
+// gossipRound anti-entropies a bounded random subset of peers. The fan-out
+// adapts to congestion: it backs off multiplicatively when a round mostly fails
+// (peers unreachable or rate-limiting) and recovers additively when healthy, so
+// a struggling mesh is not hammered with the full O(N) fan-out every round.
 func (e *Engine) gossipRound(ctx context.Context) {
+	peers := e.eligiblePeers()
+	if len(peers) == 0 {
+		return
+	}
+	e.shufflePeers(peers)
+	if fanout := e.fanoutFor(len(peers)); fanout < len(peers) {
+		peers = peers[:fanout]
+	}
+
+	failed := 0
+	for _, m := range peers {
+		if !e.syncPeer(ctx, m) {
+			failed++
+		}
+	}
+	e.adjustFanout(failed, len(peers))
+}
+
+func (e *Engine) eligiblePeers() []membership.Member {
+	var out []membership.Member
 	for _, m := range e.swim.List().ActiveMembers() {
 		if m.NodeID == e.cfg.NodeID || len(m.Addresses) == 0 {
 			continue
 		}
-		sess, err := e.mgr.SessionFor(ctx, m.NodeID, m.Addresses[0])
-		if err != nil {
-			continue
+		out = append(out, m)
+	}
+	return out
+}
+
+// syncPeer runs anti-entropy against one peer across every subscribed scope,
+// returning false if the session or any exchange failed.
+func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
+	sess, err := e.mgr.SessionFor(ctx, m.NodeID, m.Addresses[0])
+	if err != nil {
+		return false
+	}
+	for _, scopeKey := range e.cfg.SubscribedScopes {
+		haveSeqs, haveAbove := e.set.ScopeState(scopeKey)
+		req := &frienv1.AntiEntropyRequest{
+			ProtoVersion: e.cfg.ProtoVersion,
+			RequesterId:  e.cfg.NodeID,
+			Zone:         e.cfg.Zone,
+			Scope:        scopeKey,
+			HaveSeqs:     haveSeqs,
+			HaveAbove:    haveAbove,
 		}
-		for _, scopeKey := range e.cfg.SubscribedScopes {
-			haveSeqs, haveAbove := e.set.ScopeState(scopeKey)
-			req := &frienv1.AntiEntropyRequest{
-				ProtoVersion: e.cfg.ProtoVersion,
-				RequesterId:  e.cfg.NodeID,
-				Zone:         e.cfg.Zone,
-				Scope:        scopeKey,
-				HaveSeqs:     haveSeqs,
-				HaveAbove:    haveAbove,
-			}
-			var resp frienv1.AntiEntropyResponse
-			if err := roundtrip(ctx, sess, kindAntiEntropy, req, &resp); err != nil {
-				e.mgr.drop(m.NodeID)
-				break
-			}
-			for _, env := range resp.GetMissingOps() {
-				e.ingest(env)
-			}
+		var resp frienv1.AntiEntropyResponse
+		if err := roundtrip(ctx, sess, kindAntiEntropy, req, &resp); err != nil {
+			e.mgr.drop(m.NodeID)
+			return false
+		}
+		for _, env := range resp.GetMissingOps() {
+			e.ingest(env)
 		}
 	}
+	return true
+}
+
+// fanoutFor returns how many of available peers to contact this round, seeding
+// the adaptive target optimistically at the configured maximum on first use.
+func (e *Engine) fanoutFor(available int) int {
+	e.fanoutMu.Lock()
+	defer e.fanoutMu.Unlock()
+	if e.fanout == 0 {
+		e.fanout = e.cfg.GossipFanout
+	}
+	f := e.fanout
+	if f > available {
+		f = available
+	}
+	if f < 1 {
+		f = 1
+	}
+	return f
+}
+
+// adjustFanout applies AIMD to the fan-out target: halve it when a round mostly
+// failed, otherwise step it back up toward the configured maximum.
+func (e *Engine) adjustFanout(failed, contacted int) {
+	if contacted == 0 {
+		return
+	}
+	e.fanoutMu.Lock()
+	defer e.fanoutMu.Unlock()
+	switch {
+	case failed*2 > contacted:
+		e.fanout /= 2
+		if e.fanout < 1 {
+			e.fanout = 1
+		}
+	case e.fanout < e.cfg.GossipFanout:
+		e.fanout++
+	}
+}
+
+func (e *Engine) shufflePeers(peers []membership.Member) {
+	for i := len(peers) - 1; i > 0; i-- {
+		j := randIntn(i + 1)
+		peers[i], peers[j] = peers[j], peers[i]
+	}
+}
+
+// randIntn returns a uniform-ish int in [0, n) from crypto/rand.
+func randIntn(n int) int {
+	if n <= 1 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return int(binary.BigEndian.Uint64(b[:]) % uint64(n))
 }
 
 // ingest applies a received op after the scope and clock-skew gates. A bad HLC
