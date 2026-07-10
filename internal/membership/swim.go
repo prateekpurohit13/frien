@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"math/rand"
+	"sort"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ type Config struct {
 	SuspectMultiplier int // suspicion timeout = SuspectMultiplier * ProbeInterval
 	IndirectProbes    int // relays asked to indirectly probe a non-responding peer
 	RetransmitMult    int // dissemination retransmits scale with this * log10(N)
+	QueueDepth        int // hard cap on pending broadcasts; 0 => default
 }
 
 func (c Config) suspicionTimeout() time.Duration {
@@ -35,6 +37,13 @@ func (c Config) suspicionTimeout() time.Duration {
 		mult = 4
 	}
 	return time.Duration(mult) * c.ProbeInterval
+}
+
+func (c Config) queueDepth() int {
+	if c.QueueDepth <= 0 {
+		return 512
+	}
+	return c.QueueDepth
 }
 
 // maxAwareness bounds the local-health penalty; the probe interval and suspicion
@@ -58,7 +67,7 @@ type SWIM struct {
 	awareness int // local-health penalty in [0, maxAwareness-1]; 0 == healthy
 
 	queueMu sync.Mutex
-	queue   []*broadcast
+	queue   map[string]*broadcast // keyed by NodeID; one pending broadcast per node
 }
 
 // broadcast is a pending membership update with a bounded retransmit budget,
@@ -88,6 +97,7 @@ func New(localID string, prober Prober, cfg Config, log zerolog.Logger, opts ...
 		now:     time.Now,
 		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		log:     log,
+		queue:   make(map[string]*broadcast),
 	}
 	for _, o := range opts {
 		o(s)
@@ -262,38 +272,58 @@ func (s *SWIM) pickRelays(target Member, k int) []Member {
 func (s *SWIM) enqueue(u Update) {
 	s.queueMu.Lock()
 	defer s.queueMu.Unlock()
-	for _, b := range s.queue {
-		if b.update.NodeID == u.NodeID {
-			b.update = u
-			b.sends = 0
-			return
+	if b, ok := s.queue[u.NodeID]; ok {
+		b.update = u
+		b.sends = 0
+		return
+	}
+	s.queue[u.NodeID] = &broadcast{update: u}
+	if len(s.queue) > s.cfg.queueDepth() {
+		s.pruneMostTransmitted()
+	}
+}
+
+// pruneMostTransmitted drops the broadcast that has already been sent the most.
+// It is the one closest to full dissemination, so shedding it under a storm
+// costs the least propagation while keeping the queue within its cap.
+func (s *SWIM) pruneMostTransmitted() {
+	worstID, worst := "", -1
+	for id, b := range s.queue {
+		if b.sends > worst {
+			worst, worstID = b.sends, id
 		}
 	}
-	s.queue = append(s.queue, &broadcast{update: u})
+	if worstID != "" {
+		delete(s.queue, worstID)
+	}
 }
 
 // Updates returns up to max pending membership updates to piggyback on outgoing
 // gossip, charging each one a retransmit and retiring those past their budget.
+// Least-transmitted updates go first so the freshest changes win a bounded slot.
 func (s *SWIM) Updates(max int) []Update {
 	limit := s.retransmitLimit()
 
 	s.queueMu.Lock()
 	defer s.queueMu.Unlock()
 
-	out := make([]Update, 0, len(s.queue))
-	kept := s.queue[:0]
+	order := make([]*broadcast, 0, len(s.queue))
 	for _, b := range s.queue {
+		order = append(order, b)
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i].sends < order[j].sends })
+
+	out := make([]Update, 0, len(order))
+	for _, b := range order {
 		if max > 0 && len(out) >= max {
-			kept = append(kept, b)
-			continue
+			break
 		}
 		out = append(out, b.update)
 		b.sends++
-		if b.sends < limit {
-			kept = append(kept, b)
+		if b.sends >= limit {
+			delete(s.queue, b.update.NodeID)
 		}
 	}
-	s.queue = kept
 	return out
 }
 

@@ -2,6 +2,7 @@ package membership
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
@@ -287,6 +288,65 @@ func TestAwarenessExtendsSuspicionTimeout(t *testing.T) {
 	s.Tick()
 	if m, _ := s.List().Get("b"); m.State != StateDead {
 		t.Fatalf("suspect should expire once the scaled timeout passes, got %s", m.State)
+	}
+}
+
+func TestBroadcastQueueCapsAtDepth(t *testing.T) {
+	s := New("self", nil, Config{QueueDepth: 3}, zerolog.Nop())
+	for i := 0; i < 10; i++ {
+		s.enqueue(Update{NodeID: fmt.Sprintf("n%d", i), State: StateAlive})
+	}
+	s.queueMu.Lock()
+	n := len(s.queue)
+	s.queueMu.Unlock()
+	if n != 3 {
+		t.Fatalf("queue should be capped at depth 3, got %d", n)
+	}
+}
+
+func TestBroadcastQueuePrunesMostTransmitted(t *testing.T) {
+	s := New("self", nil, Config{QueueDepth: 2}, zerolog.Nop())
+	s.enqueue(Update{NodeID: "old", State: StateAlive})
+	s.Updates(10) // charges "old" a retransmit; it now leads on sends
+	s.enqueue(Update{NodeID: "b", State: StateAlive})
+	s.enqueue(Update{NodeID: "c", State: StateAlive}) // exceeds cap, prunes most-transmitted
+
+	s.queueMu.Lock()
+	_, hasOld := s.queue["old"]
+	n := len(s.queue)
+	s.queueMu.Unlock()
+	if n != 2 {
+		t.Fatalf("queue should stay at cap 2, got %d", n)
+	}
+	if hasOld {
+		t.Fatal("the most-transmitted entry should have been pruned first")
+	}
+}
+
+func TestUpdatesDrainLeastTransmittedFirst(t *testing.T) {
+	s := New("self", nil, Config{}, zerolog.Nop())
+	s.enqueue(Update{NodeID: "a", State: StateAlive})
+	s.Updates(1) // a now has one send
+	s.enqueue(Update{NodeID: "b", State: StateAlive})
+
+	got := s.Updates(1)
+	if len(got) != 1 || got[0].NodeID != "b" {
+		t.Fatalf("least-transmitted update should drain first, got %v", got)
+	}
+}
+
+func TestUpdatesRetireAtRetransmitLimit(t *testing.T) {
+	s := New("self", nil, Config{}, zerolog.Nop())
+	s.enqueue(Update{NodeID: "a", State: StateAlive})
+	limit := s.retransmitLimit()
+	for i := 0; i < limit; i++ {
+		s.Updates(10)
+	}
+	s.queueMu.Lock()
+	_, present := s.queue["a"]
+	s.queueMu.Unlock()
+	if present {
+		t.Fatalf("update should retire after %d retransmits", limit)
 	}
 }
 
