@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -167,8 +168,19 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 	return env, nil
 }
 
+const (
+	bootstrapBaseBackoff = 200 * time.Millisecond
+	bootstrapMaxBackoff  = 5 * time.Second
+)
+
 func (e *Engine) bootstrap(ctx context.Context) {
+	// Spread a fleet-wide simultaneous restart so seeds are not all dialed in
+	// lockstep, which would concentrate the rejoin load into one instant.
+	if !sleepCtx(ctx, jitter(e.cfg.GossipInterval)) {
+		return
+	}
 	for _, seed := range e.cfg.Seeds {
+		backoff := bootstrapBaseBackoff
 		for attempt := 0; attempt < 10; attempt++ {
 			if ctx.Err() != nil {
 				return
@@ -178,13 +190,43 @@ func (e *Engine) bootstrap(ctx context.Context) {
 				e.swim.Seed(sess.NodeID, []string{seed})
 				break
 			}
-			select {
-			case <-ctx.Done():
+			if !sleepCtx(ctx, backoff+jitter(backoff)) {
 				return
-			case <-time.After(200 * time.Millisecond):
+			}
+			if backoff < bootstrapMaxBackoff {
+				backoff *= 2
 			}
 		}
 	}
+}
+
+// sleepCtx waits for d or until ctx is cancelled, returning true if the full
+// duration elapsed and false if the context was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// jitter returns a random duration in [0, d) drawn from crypto/rand, used to
+// desynchronize fleet-wide timers. It returns 0 for a non-positive d.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return 0
+	}
+	return time.Duration(binary.BigEndian.Uint64(b[:]) % uint64(d))
 }
 
 func (e *Engine) gossipLoop(ctx context.Context) {
