@@ -58,12 +58,14 @@ func (s *OpSet) indexScope(env *frienv1.OperationEnvelope) {
 	s.opScope[env.GetOpId()] = sc
 }
 
-// unindexScope removes id from whatever scope it was recorded under. It
-// assumes the write lock is held.
+// unindexScope removes id from the live per-scope set. opScope itself is kept
+// forever as a tombstone alongside seqIndex: ScopeState needs it to know which
+// scope a compacted (now-gone) seq belonged to, so the contiguous watermark
+// can keep advancing across a compacted region instead of seeing a gap where
+// removed ops used to be. It assumes the write lock is held.
 func (s *OpSet) unindexScope(id string) {
 	if sc, ok := s.opScope[id]; ok {
 		delete(s.scopeIndex[sc], id)
-		delete(s.opScope, id)
 	}
 }
 

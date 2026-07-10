@@ -435,3 +435,26 @@ func TestCompactedSeqStillDetectsLateEquivocation(t *testing.T) {
 		t.Fatal("the newly detected equivocating op should be admitted (and now protected from compaction)")
 	}
 }
+
+func TestScopeStateWatermarkAdvancesPastCompactedRegion(t *testing.T) {
+	s := NewOpSet()
+	for sq := uint64(1); sq <= 3; sq++ {
+		s.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+	s.CompactBelow(map[string]uint64{"node.a": 3})
+
+	haveSeqs, haveAbove := s.ScopeState("fleet")
+	if haveSeqs["node.a"] != 3 {
+		t.Fatalf("watermark should still read 3 after compaction, got %d", haveSeqs["node.a"])
+	}
+	if len(haveAbove) != 0 {
+		t.Fatalf("nothing should be listed above the watermark right after full compaction, got %v", haveAbove)
+	}
+
+	// A new op continuing the sequence should extend the watermark further.
+	s.Add(threatEnv(t, "op4", "node.a", 4, ""))
+	haveSeqs, _ = s.ScopeState("fleet")
+	if haveSeqs["node.a"] != 4 {
+		t.Fatalf("watermark should advance to 4 across the compacted region, got %d", haveSeqs["node.a"])
+	}
+}

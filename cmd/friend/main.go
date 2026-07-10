@@ -21,6 +21,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/prateekpurohit13/frien/internal/checkpoint"
 	"github.com/prateekpurohit13/frien/internal/config"
 	"github.com/prateekpurohit13/frien/internal/crdt"
 	"github.com/prateekpurohit13/frien/internal/gossip"
@@ -244,6 +245,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		}
 	}
 
+	set := crdt.NewOpSet()
 	eng := gossip.New(gossip.Config{
 		NodeID:            cfg.Node.ID,
 		Zone:              cfg.Node.Zone,
@@ -256,12 +258,18 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		SuspectMultiplier: cfg.Membership.SuspectMultiplier,
 		IndirectProbes:    cfg.Membership.MaxGossipNodes,
 		OperatorPublicKey: operatorKey,
-	}, id, clock, crdt.NewOpSet(), scope.NewRouter(cfg.Node.Zone), tr, log)
+	}, id, clock, set, scope.NewRouter(cfg.Node.Zone), tr, log)
 
 	if err := eng.Start(ctx); err != nil {
 		return nil, nil, err
 	}
 	log.Info().Str("peer_bind", cfg.Transport.PeerBind).Int("peer_port", cfg.Transport.PeerPort).Msg("peer mesh started")
+
+	// Fleet-scope compaction: see internal/checkpoint's package docs for why
+	// only the fleet scope is compacted today.
+	compactor := checkpoint.NewCompactor(set, eng.PeerWatermarks(), eng, eng.LiveFleetPeers, id.Signer(), log)
+	go runCompactor(ctx, compactor, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
+
 	return eng, clock, nil
 }
 
@@ -284,6 +292,27 @@ func (p peerAdapter) Peers() []admingrpc.PeerInfo {
 
 // persistHLCLoop periodically saves the Hybrid Logical Clock so a restart resumes
 // without the clock regressing.
+// runCompactor drives the compaction loop with panic recovery and restart, so
+// a bug in one compaction cycle cannot silently stop the mesh from ever
+// compacting again (the same reasoning as gossip's own supervised loops).
+func runCompactor(ctx context.Context, c *checkpoint.Compactor, interval time.Duration, log zerolog.Logger) {
+	for ctx.Err() == nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().Interface("panic", r).Msg("compactor panicked; restarting")
+				}
+			}()
+			c.Run(ctx, interval)
+		}()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 func persistHLCLoop(ctx context.Context, store *storage.Store, clock *crdt.Clock, log zerolog.Logger) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()

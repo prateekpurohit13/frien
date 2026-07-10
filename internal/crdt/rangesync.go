@@ -16,20 +16,23 @@ type nodeSeq struct {
 // op_ids not covered by those watermarks (the out-of-order tail plus any
 // equivocation siblings). A peer can then return exactly the ops this node
 // lacks without either side shipping its full op-id set for the scope.
+//
+// The contiguous-watermark scan reads seqIndex (kept forever, including seqs
+// whose envelope has since been compacted) rather than the live scopeIndex,
+// filtered by the opScope tombstone. Scanning only live ops would make a
+// watermark unable to advance past a compacted region: the compacted seqs
+// would simply be invisible, looking like a permanent gap.
 func (s *OpSet) ScopeState(scopeKey string) (haveSeqs map[string]uint64, haveAbove []string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	ids := s.scopeIndex[scopeKey]
-	seqsByNode := make(map[string][]uint64, len(ids))
-	countByNodeSeq := make(map[nodeSeq]int, len(ids))
-	for id := range ids {
-		env := s.ops[id]
-		if env == nil {
-			continue
+	seqsByNode := make(map[string][]uint64)
+	for node, bySeq := range s.seqIndex {
+		for seq, id := range bySeq {
+			if s.opScope[id] == scopeKey {
+				seqsByNode[node] = append(seqsByNode[node], seq)
+			}
 		}
-		seqsByNode[env.GetNodeId()] = append(seqsByNode[env.GetNodeId()], env.GetSeq())
-		countByNodeSeq[nodeSeq{env.GetNodeId(), env.GetSeq()}]++
 	}
 
 	haveSeqs = make(map[string]uint64, len(seqsByNode))
@@ -46,6 +49,17 @@ func (s *OpSet) ScopeState(scopeKey string) (haveSeqs map[string]uint64, haveAbo
 		haveSeqs[n] = wm
 	}
 
+	// haveAbove only ever needs to list still-present ops: it tells a peer
+	// what this node already holds beyond the watermark (or as an
+	// equivocation sibling), and a compacted op cannot be listed or sent
+	// regardless -- every live peer is already guaranteed to hold it.
+	ids := s.scopeIndex[scopeKey]
+	countByNodeSeq := make(map[nodeSeq]int, len(ids))
+	for id := range ids {
+		if env := s.ops[id]; env != nil {
+			countByNodeSeq[nodeSeq{env.GetNodeId(), env.GetSeq()}]++
+		}
+	}
 	for id := range ids {
 		env := s.ops[id]
 		if env == nil {
