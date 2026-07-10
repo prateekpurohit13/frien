@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -30,9 +31,16 @@ type Session struct {
 	conn        *quic.Conn
 	NodeID      string
 	Fingerprint string
-	Version     uint32
-	maxBytes    int
-	log         zerolog.Logger
+	// PeerKey is the ed25519 public key bound in the peer's already CA-verified
+	// leaf certificate. Per the architecture, this is the same key the peer signs
+	// operation envelopes with, so an established session is a trustworthy source
+	// for populating a node's envelope-verification key without a separate
+	// key-distribution step. Nil if the peer's certificate does not carry an
+	// ed25519 key (should not happen for a conforming node).
+	PeerKey  ed25519.PublicKey
+	Version  uint32
+	maxBytes int
+	log      zerolog.Logger
 }
 
 func newSession(conn *quic.Conn, maxBytes int, log zerolog.Logger) (*Session, error) {
@@ -41,10 +49,12 @@ func newSession(conn *quic.Conn, maxBytes int, log zerolog.Logger) (*Session, er
 		return nil, fmt.Errorf("transport: peer presented no certificate")
 	}
 	leaf := certs[0]
+	peerKey, _ := leaf.PublicKey.(ed25519.PublicKey)
 	return &Session{
 		conn:        conn,
 		NodeID:      leaf.Subject.CommonName,
 		Fingerprint: identity.CertFingerprint(leaf),
+		PeerKey:     peerKey,
 		maxBytes:    maxBytes,
 		log:         log,
 	}, nil
