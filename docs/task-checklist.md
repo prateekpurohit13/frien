@@ -1,6 +1,6 @@
 # frien — Implementation Task Checklist
 
-Last updated: 2026-06-14 (Phase 0 scaffold complete + PQC hybrid signatures implemented)
+Last updated: 2026-07-10 (Phase 0 complete: tooling, proto codegen, CI baseline, TLA+ skeleton)
 
 Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 
@@ -32,11 +32,11 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 - [x] Correct folder structure created (see `docs/folder-structure.md`)
 - [x] `.env.example` created at repo root
 - [x] `Makefile` created with standard targets
-- [ ] `.gitignore` updated (key files, binaries, WAL data)
+- [x] `.gitignore` updated (key files, binaries, WAL data)
 
 ### gRPC Contract Definition
 - [x] `proto/v1/frien.proto` — all message types and services defined
-- [ ] `pkg/proto/v1/` — generated Go code from proto (requires protoc toolchain)
+- [x] `pkg/proto/v1/` — generated Go code from proto (via `buf generate`, `buf.gen.yaml` + `proto/v1/buf.yaml`; `protoc-gen-go`/`protoc-gen-go-grpc` plugins)
 - [x] `internal/version/version.go` — protocol version constants and negotiation
 
 ### Go Package Skeleton (Phase 0 / Phase 1 start)
@@ -51,17 +51,17 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
 ### Build Verification
 - [x] `go build ./...` — passes cleanly
 - [x] `go test -race ./internal/...` — all tests pass
-- [ ] `golangci-lint` configured (`.golangci.yaml`)
-- [ ] SBOM generation (`syft`) step drafted
-- [ ] Signed artifact workflow drafted (`cosign`)
+- [x] `golangci-lint` configured (`.golangci.yaml`) — not yet run locally (golangci-lint binary not installed on this Windows dev box; runs in CI)
+- [x] SBOM generation (`syft`) step drafted — `.github/workflows/ci.yml` `sbom` job (`anchore/sbom-action`)
+- [x] Signed artifact workflow drafted (`cosign`) — `.github/workflows/ci.yml` `release-sign` job (keyless `cosign sign-blob`, tag-triggered)
 
 ### CI Baseline
-- [ ] `govulncheck` integrated
-- [ ] `golangci-lint` configured
-- [ ] SBOM + signing CI steps drafted
+- [x] `govulncheck` integrated — `.github/workflows/ci.yml` `vuln` job
+- [x] `golangci-lint` configured — `.github/workflows/ci.yml` `lint` job (`golangci-lint-action`)
+- [x] SBOM + signing CI steps drafted — see above
 
 ### TLA+ Spec Skeleton
-- [ ] `specs/frien.tla` — skeleton covering membership, quorum, quarantine, revocation
+- [x] `specs/frien.tla` — skeleton covering membership FSM (alive/suspect/dead/left), quorum-gated enforcement, misbehavior quarantine, and revocation; not yet model-checked with TLC
 
 ---
 
