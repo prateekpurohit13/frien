@@ -34,6 +34,7 @@ type Config struct {
 	ProtoVersion     uint32
 	MaxUpdatesPerMsg int
 	MaxOpsPerScope   int // 0 = unlimited; inbound memory bound
+	MaxOpsPerMsg     int // max ops returned per anti-entropy response; 0 => default
 
 	ProbeInterval     time.Duration
 	ProbeTimeout      time.Duration
@@ -53,6 +54,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.MaxUpdatesPerMsg == 0 {
 		c.MaxUpdatesPerMsg = 16
+	}
+	if c.MaxOpsPerMsg == 0 {
+		c.MaxOpsPerMsg = 256
 	}
 	if c.ProbeInterval == 0 {
 		c.ProbeInterval = time.Second
@@ -336,6 +340,9 @@ func (e *Engine) OnPingReq(ctx context.Context, pr *frienv1.PingReq) *frienv1.Ac
 
 // OnAntiEntropy returns the ops in the requested scope that the requester lacks,
 // gated by egress scope rules so a peer only receives scopes meant for its zone.
+// The response is capped at MaxOpsPerMsg so a large backlog (e.g. after a long
+// partition) drains over several rounds instead of one unbounded message; op ids
+// are iterated in sorted order, so successive rounds page forward deterministically.
 func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEntropyResponse {
 	sc, err := scope.Parse(req.GetScope())
 	if err != nil || !e.router.ShouldSend(sc, req.GetZone()) {
@@ -345,6 +352,7 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 	for _, id := range req.GetHaveOpIds() {
 		have[id] = struct{}{}
 	}
+	limit := e.cfg.MaxOpsPerMsg
 	var missing []*frienv1.OperationEnvelope
 	for _, id := range e.set.OpIDsInScope(req.GetScope()) {
 		if _, ok := have[id]; ok {
@@ -352,6 +360,9 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 		}
 		if env, ok := e.set.Get(id); ok {
 			missing = append(missing, env)
+			if limit > 0 && len(missing) >= limit {
+				break
+			}
 		}
 	}
 	return &frienv1.AntiEntropyResponse{MissingOps: missing}
