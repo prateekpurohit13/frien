@@ -11,6 +11,31 @@ pattern and the rationale, not the source.
 
 Last updated: 2026-07-10.
 
+## Implementation status
+
+Phase 1–3 hardening that requires no wire-format change is **complete and validated**
+(each landed as its own tested commit):
+
+- Membership: parallel indirect probing; local-health awareness score scaling probe and
+  suspicion timing; address/identity conflict detection on rejoin; broadcast queue
+  keyed by node with least-transmitted-first drain and a hard prune cap.
+- Gossip: supervised probe and anti-entropy loops with panic recovery; jittered,
+  exponential seed-rejoin backoff; atomic per-scope op cap (gap #3); capped, paged
+  anti-entropy responses so a partition heal drains over rounds (gap #2, response side).
+- Admission: self-managed coalescer expiry loop (gap #7).
+
+**Remaining, all requiring a proto/wire change** (deferred as a separate batch so the
+generated code and wire compatibility are handled deliberately):
+
+- Confirmation-accelerated suspicion — needs a confirmer identity on the membership
+  update wire type to count independent confirmations without one chatty node inflating
+  the count.
+- Request-side range-based anti-entropy — the response is now paged, but the request
+  still carries the full have-op-id list; a per-node (node_id, seq) version-vector in
+  the request would make repeat syncs exchange only the delta.
+- Congestion-adaptive gossip fan-out — scale fan-out down under drop/rate-limit feedback;
+  entangled with the anti-entropy request redesign above.
+
 ---
 
 ## 1. Known gaps in the current implementation (self-audit)
