@@ -274,6 +274,8 @@ flowchart TD
 
 This is the most important correction to the original plan: **signatures prove provenance, not truth.** frien verifies protocol correctness, confirms the identity is not revoked, requires a quorum of distinct trusted identities that is safe under partition, and only then — and only on an enforce-mode node — takes action.
 
+The "DAG parents available?" gate is shown for conceptual completeness. In the Layer 3 implementation it is realized as **set-reconciling anti-entropy** (the op set merges by union and is healed by per-scope reconciliation), not as causal blocking on missing parents; ops are independent and applied on arrival, and equivocation is caught by the `(node_id, seq)` index rather than by walking a parents-DAG.
+
 ### 8.1 Partition-Safe Quorum Definition
 
 "Independent reports" is defined precisely to be safe in an eventually-consistent, partitionable system:
@@ -449,11 +451,25 @@ Every data-plane and control-plane object travels inside a signed, versioned env
 
 ### Layer 3: Distributed State and Scoping
 
-- Initial CRDT: expiring delta OR-Set for threat records and enforcement decisions.
-- Later CRDTs: LWW-Map for node metadata, G-Counter for telemetry, LWW-Register for small config values.
-- **Scope/zone router:** records carry a `scope` (`local`/`zone:<name>`/`fleet`). Nodes replicate only the scopes they subscribe to. This removes the full-fleet-replication scaling wall — an edge node in one zone does not hold every record from every other zone.
-- Hybrid Logical Clocks for causality without requiring clock sync.
-- Anti-entropy sync through root-hash comparison and DAG walk, **bounded below by the latest common checkpoint** (peers reconcile only the operations above the shared checkpoint).
+**State model — a grow-only set of immutable signed operations.** The shared state is not a general OR-Set. Every data-plane object is an immutable signed `OperationEnvelope` with a globally unique `op_id`, authored by exactly one identity. Because `op_id` is unique and single-author, there is never a concurrent write to the same key, so the replicated CRDT is the simplest possible one: **a grow-only set of envelopes keyed by `op_id`, whose merge is pure set-union** (a join-semilattice under set inclusion — commutative, associative, idempotent, and therefore strongly eventually consistent by construction).
+
+Higher-level semantics are **projection functions** over the immutable set, not part of the merge. Retraction, equivocation, and quorum-counting are pure functions of the set (computed identically on every replica); expiry additionally reads the local clock, so it converges as clocks agree rather than being bit-identical at every instant — an intentional trade, not a convergence defect (the underlying set still converges by union):
+
+- **Record TTL / expiry** — `present(op)` is false once `local_now ≥ expires_at`, where `expires_at` is the **origin-declared, policy-capped** field carried *in the immutable op* (not a per-replica receive-anchored value). Because the bound lives in the op, every replica targets the same instant and an already-expired op delivered late is simply never present (no resurrection); the checkpoint watermark then prunes it so anti-entropy cannot re-offer it. This is distinct from the quorum window below.
+- **Author retraction** — an author may retract its own op via a later signed `retraction` op (valid only if `signed_by` matches the original author and carries a higher `seq`). This is single-writer last-writer-wins by `seq`; there is no cross-actor add/remove race. The retraction is itself an op in the set, and is the one deliberate tombstone — a *causally-later, single-writer* tombstone, which avoids the concurrent add/remove arbitration an OR-Set tombstone needs.
+- **Quorum window** — a *separate* concept from record TTL: quorum counts present ops for an indicator by distinct identity within a window measured against the **local receive clock** (see §8.1), so origin clock skew cannot inflate or deflate quorum. Record TTL governs how long an indicator is valid; the quorum window governs how recently reports must have been *received here* to be counted together.
+
+**Why union of immutable ops, not OR-Set or LWW-element-set.** An OR-Set's add-wins tag/tombstone machinery solves concurrent same-key add/remove — a case that cannot arise here, and whose collapsing would destroy the distinct-identity quorum signal. A Roshi-style LWW-element-set is also unsafe: on a same-key collision it keeps one write and discards the other, but two ops at the same `(node_id, seq)` *are equivocation evidence that must be preserved*. Set-union of immutable ops keeps all evidence, needs no tombstone GC, and yields the desired LWW *outcome* at the projection layer with strictly less machinery.
+
+**Equivocation index.** The apply path maintains a per-author `(node_id → seq → op_hash)` index. Two distinct `op_hash` values at the same `(node_id, seq)` are equivocation and yield a portable proof (the two signed envelopes) → quarantine + revocation proposal (Layer 4). This does **not** require a causal parents-DAG.
+
+**Causal `parents` are optional.** The `parents` field remains in the envelope for optional tamper-evident history, but Phase 3 does **not** causal-gate on it: ops are independent and applied on arrival. Missing state is healed by set-reconciling anti-entropy, not by blocking on missing parents.
+
+- **Other CRDTs:** node metadata uses an LWW-Register-per-field keyed by HLC (consistent with the incarnation-LWW membership layer); telemetry uses a G-Counter. `EnforcementDecision.applied`/`rolled_back` are **local enforcer columns in bbolt, not gossiped CRDT state** — the gossiped decision is immutable.
+- **Scope/zone router:** records carry a `scope` (`local`/`zone:<name>`/`fleet`). Nodes replicate only the scopes they subscribe to, removing the full-fleet-replication scaling wall. Scope is enforced on **both egress and ingress** (defense in depth): a `local` op is never sent, and an op for an unsubscribed scope is dropped on receipt.
+- **Hybrid Logical Clocks** stamp every op for causality and the stability watermark, without requiring clock sync. The HLC is **persisted to bbolt** so it cannot regress across restart, is clamped to a bounded physical drift, and feeds the `clock_skew_window` rejection.
+- **Anti-entropy** reconciles **per-scope** sets via per-scope Merkle root-hash comparison (a single global root never matches between a fleet node and a zone node), **bounded below by the latest common checkpoint**. Idempotent union makes a dropped gossip delta self-healing; delta-interval acks are a bandwidth optimization, not a correctness requirement.
+- **Compaction watermark:** a per-peer highest-observed-HLC vector defines the stable cut — everything below the min watermark across in-scope peers is stable and eligible for checkpoint + prune.
 - Property-based tests for convergence, idempotency, commutativity, and associativity.
 
 ### Layer 4: Tamper-Evident Verification and Compaction
@@ -799,7 +815,7 @@ frien/
     checkpoint/             # DAG/WAL compaction + signed checkpoints
     config/                 # config loading and validation
     controlplane/           # operator-signed policy & trust-tier distribution
-    crdt/                   # OR-Set, LWW map, counters
+    crdt/                   # op-id-keyed grow-only set (union), LWW-register, counters, HLC
     detector/               # detector interface and built-ins
     enforcer/               # adapter interfaces, self-expiring rules, dead-man switch
     harden/                 # self-protection checks and profiles
@@ -848,7 +864,7 @@ frien/
 ### Build Directly
 
 - SWIM membership implementation.
-- Delta OR-Set for threat records.
+- Grow-only set of immutable signed ops (union merge) for threat records; deterministic TTL/retraction projections.
 - Hybrid Logical Clock.
 - Operation envelope format and protocol-version negotiation.
 - Merkle DAG verifier and checkpoint/compaction logic.
@@ -1304,7 +1320,7 @@ Goal: replicate scoped threat records without central coordination.
 Deliverables:
 
 - HLC implementation
-- expiring OR-Set, delta propagation
+- op-id-keyed grow-only set (union merge) with expiry/retraction projections, delta propagation
 - scope/zone replication router
 - anti-entropy sync
 - property-based convergence tests
@@ -1457,8 +1473,8 @@ Sprint goal: make scoped threat records converge.
 
 Backlog:
 
-- HLC, operation IDs, expiring OR-Set
-- scope/zone router, delta gossip, anti-entropy root exchange
+- HLC, operation IDs, op-id-keyed grow-only set (union merge) with expiry/retraction projections
+- scope/zone router, delta gossip, per-scope anti-entropy root exchange
 - convergence property tests
 - `frienctl report ip --scope zone:...`
 

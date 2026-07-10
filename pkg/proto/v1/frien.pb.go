@@ -514,6 +514,61 @@ func (x *EnforcementDecision) GetRolledBack() bool {
 	return false
 }
 
+// Retraction is the payload of an op_type="retraction" envelope. It withdraws a
+// prior op authored by the same node; the projection layer applies it only when
+// the retraction is signed by the original author and carries a higher seq.
+type Retraction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TargetOpId    string                 `protobuf:"bytes,1,opt,name=target_op_id,json=targetOpId,proto3" json:"target_op_id,omitempty"` // op_id of the op being retracted
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Retraction) Reset() {
+	*x = Retraction{}
+	mi := &file_frien_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Retraction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Retraction) ProtoMessage() {}
+
+func (x *Retraction) ProtoReflect() protoreflect.Message {
+	mi := &file_frien_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Retraction.ProtoReflect.Descriptor instead.
+func (*Retraction) Descriptor() ([]byte, []int) {
+	return file_frien_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *Retraction) GetTargetOpId() string {
+	if x != nil {
+		return x.TargetOpId
+	}
+	return ""
+}
+
+func (x *Retraction) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 type PeerState struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	NodeId           string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -535,7 +590,7 @@ type PeerState struct {
 
 func (x *PeerState) Reset() {
 	*x = PeerState{}
-	mi := &file_frien_proto_msgTypes[3]
+	mi := &file_frien_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -547,7 +602,7 @@ func (x *PeerState) String() string {
 func (*PeerState) ProtoMessage() {}
 
 func (x *PeerState) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[3]
+	mi := &file_frien_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -560,7 +615,7 @@ func (x *PeerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerState.ProtoReflect.Descriptor instead.
 func (*PeerState) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{3}
+	return file_frien_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PeerState) GetNodeId() string {
@@ -671,7 +726,7 @@ type Checkpoint struct {
 
 func (x *Checkpoint) Reset() {
 	*x = Checkpoint{}
-	mi := &file_frien_proto_msgTypes[4]
+	mi := &file_frien_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +738,7 @@ func (x *Checkpoint) String() string {
 func (*Checkpoint) ProtoMessage() {}
 
 func (x *Checkpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[4]
+	mi := &file_frien_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +751,7 @@ func (x *Checkpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Checkpoint.ProtoReflect.Descriptor instead.
 func (*Checkpoint) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{4}
+	return file_frien_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Checkpoint) GetCheckpointId() string {
@@ -778,7 +833,7 @@ type RevocationRecord struct {
 
 func (x *RevocationRecord) Reset() {
 	*x = RevocationRecord{}
-	mi := &file_frien_proto_msgTypes[5]
+	mi := &file_frien_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -790,7 +845,7 @@ func (x *RevocationRecord) String() string {
 func (*RevocationRecord) ProtoMessage() {}
 
 func (x *RevocationRecord) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[5]
+	mi := &file_frien_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -803,7 +858,7 @@ func (x *RevocationRecord) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RevocationRecord.ProtoReflect.Descriptor instead.
 func (*RevocationRecord) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{5}
+	return file_frien_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RevocationRecord) GetId() string {
@@ -870,7 +925,7 @@ type GetStatusRequest struct {
 
 func (x *GetStatusRequest) Reset() {
 	*x = GetStatusRequest{}
-	mi := &file_frien_proto_msgTypes[6]
+	mi := &file_frien_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +937,7 @@ func (x *GetStatusRequest) String() string {
 func (*GetStatusRequest) ProtoMessage() {}
 
 func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[6]
+	mi := &file_frien_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +950,7 @@ func (x *GetStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetStatusRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{6}
+	return file_frien_proto_rawDescGZIP(), []int{7}
 }
 
 type GetStatusResponse struct {
@@ -914,7 +969,7 @@ type GetStatusResponse struct {
 
 func (x *GetStatusResponse) Reset() {
 	*x = GetStatusResponse{}
-	mi := &file_frien_proto_msgTypes[7]
+	mi := &file_frien_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -926,7 +981,7 @@ func (x *GetStatusResponse) String() string {
 func (*GetStatusResponse) ProtoMessage() {}
 
 func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[7]
+	mi := &file_frien_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -939,7 +994,7 @@ func (x *GetStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetStatusResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{7}
+	return file_frien_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetStatusResponse) GetNodeId() string {
@@ -1007,7 +1062,7 @@ type ListPeersRequest struct {
 
 func (x *ListPeersRequest) Reset() {
 	*x = ListPeersRequest{}
-	mi := &file_frien_proto_msgTypes[8]
+	mi := &file_frien_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1019,7 +1074,7 @@ func (x *ListPeersRequest) String() string {
 func (*ListPeersRequest) ProtoMessage() {}
 
 func (x *ListPeersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[8]
+	mi := &file_frien_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1032,7 +1087,7 @@ func (x *ListPeersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPeersRequest.ProtoReflect.Descriptor instead.
 func (*ListPeersRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{8}
+	return file_frien_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListPeersRequest) GetZoneFilter() string {
@@ -1051,7 +1106,7 @@ type ListPeersResponse struct {
 
 func (x *ListPeersResponse) Reset() {
 	*x = ListPeersResponse{}
-	mi := &file_frien_proto_msgTypes[9]
+	mi := &file_frien_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1063,7 +1118,7 @@ func (x *ListPeersResponse) String() string {
 func (*ListPeersResponse) ProtoMessage() {}
 
 func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[9]
+	mi := &file_frien_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1076,7 +1131,7 @@ func (x *ListPeersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListPeersResponse.ProtoReflect.Descriptor instead.
 func (*ListPeersResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{9}
+	return file_frien_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListPeersResponse) GetPeers() []*PeerState {
@@ -1102,7 +1157,7 @@ type ReportThreatRequest struct {
 
 func (x *ReportThreatRequest) Reset() {
 	*x = ReportThreatRequest{}
-	mi := &file_frien_proto_msgTypes[10]
+	mi := &file_frien_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1114,7 +1169,7 @@ func (x *ReportThreatRequest) String() string {
 func (*ReportThreatRequest) ProtoMessage() {}
 
 func (x *ReportThreatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[10]
+	mi := &file_frien_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1127,7 +1182,7 @@ func (x *ReportThreatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportThreatRequest.ProtoReflect.Descriptor instead.
 func (*ReportThreatRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{10}
+	return file_frien_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ReportThreatRequest) GetIndicator() string {
@@ -1197,7 +1252,7 @@ type ReportThreatResponse struct {
 
 func (x *ReportThreatResponse) Reset() {
 	*x = ReportThreatResponse{}
-	mi := &file_frien_proto_msgTypes[11]
+	mi := &file_frien_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1209,7 +1264,7 @@ func (x *ReportThreatResponse) String() string {
 func (*ReportThreatResponse) ProtoMessage() {}
 
 func (x *ReportThreatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[11]
+	mi := &file_frien_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1222,7 +1277,7 @@ func (x *ReportThreatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReportThreatResponse.ProtoReflect.Descriptor instead.
 func (*ReportThreatResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{11}
+	return file_frien_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReportThreatResponse) GetOpId() string {
@@ -1255,7 +1310,7 @@ type ExplainDecisionRequest struct {
 
 func (x *ExplainDecisionRequest) Reset() {
 	*x = ExplainDecisionRequest{}
-	mi := &file_frien_proto_msgTypes[12]
+	mi := &file_frien_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1267,7 +1322,7 @@ func (x *ExplainDecisionRequest) String() string {
 func (*ExplainDecisionRequest) ProtoMessage() {}
 
 func (x *ExplainDecisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[12]
+	mi := &file_frien_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1280,7 +1335,7 @@ func (x *ExplainDecisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainDecisionRequest.ProtoReflect.Descriptor instead.
 func (*ExplainDecisionRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{12}
+	return file_frien_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ExplainDecisionRequest) GetIndicator() string {
@@ -1310,7 +1365,7 @@ type ExplainDecisionResponse struct {
 
 func (x *ExplainDecisionResponse) Reset() {
 	*x = ExplainDecisionResponse{}
-	mi := &file_frien_proto_msgTypes[13]
+	mi := &file_frien_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1322,7 +1377,7 @@ func (x *ExplainDecisionResponse) String() string {
 func (*ExplainDecisionResponse) ProtoMessage() {}
 
 func (x *ExplainDecisionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[13]
+	mi := &file_frien_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1335,7 +1390,7 @@ func (x *ExplainDecisionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExplainDecisionResponse.ProtoReflect.Descriptor instead.
 func (*ExplainDecisionResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{13}
+	return file_frien_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ExplainDecisionResponse) GetIndicator() string {
@@ -1433,7 +1488,7 @@ type SetEnforceModeRequest struct {
 
 func (x *SetEnforceModeRequest) Reset() {
 	*x = SetEnforceModeRequest{}
-	mi := &file_frien_proto_msgTypes[14]
+	mi := &file_frien_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1445,7 +1500,7 @@ func (x *SetEnforceModeRequest) String() string {
 func (*SetEnforceModeRequest) ProtoMessage() {}
 
 func (x *SetEnforceModeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[14]
+	mi := &file_frien_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1458,7 +1513,7 @@ func (x *SetEnforceModeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetEnforceModeRequest.ProtoReflect.Descriptor instead.
 func (*SetEnforceModeRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{14}
+	return file_frien_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SetEnforceModeRequest) GetMode() string {
@@ -1493,7 +1548,7 @@ type SetEnforceModeResponse struct {
 
 func (x *SetEnforceModeResponse) Reset() {
 	*x = SetEnforceModeResponse{}
-	mi := &file_frien_proto_msgTypes[15]
+	mi := &file_frien_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1505,7 +1560,7 @@ func (x *SetEnforceModeResponse) String() string {
 func (*SetEnforceModeResponse) ProtoMessage() {}
 
 func (x *SetEnforceModeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[15]
+	mi := &file_frien_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1518,7 +1573,7 @@ func (x *SetEnforceModeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetEnforceModeResponse.ProtoReflect.Descriptor instead.
 func (*SetEnforceModeResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{15}
+	return file_frien_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *SetEnforceModeResponse) GetPreviousMode() string {
@@ -1552,7 +1607,7 @@ type RollbackEnforcementRequest struct {
 
 func (x *RollbackEnforcementRequest) Reset() {
 	*x = RollbackEnforcementRequest{}
-	mi := &file_frien_proto_msgTypes[16]
+	mi := &file_frien_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1564,7 +1619,7 @@ func (x *RollbackEnforcementRequest) String() string {
 func (*RollbackEnforcementRequest) ProtoMessage() {}
 
 func (x *RollbackEnforcementRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[16]
+	mi := &file_frien_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1577,7 +1632,7 @@ func (x *RollbackEnforcementRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackEnforcementRequest.ProtoReflect.Descriptor instead.
 func (*RollbackEnforcementRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{16}
+	return file_frien_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *RollbackEnforcementRequest) GetRollbackToken() string {
@@ -1604,7 +1659,7 @@ type RollbackEnforcementResponse struct {
 
 func (x *RollbackEnforcementResponse) Reset() {
 	*x = RollbackEnforcementResponse{}
-	mi := &file_frien_proto_msgTypes[17]
+	mi := &file_frien_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1616,7 +1671,7 @@ func (x *RollbackEnforcementResponse) String() string {
 func (*RollbackEnforcementResponse) ProtoMessage() {}
 
 func (x *RollbackEnforcementResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[17]
+	mi := &file_frien_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1629,7 +1684,7 @@ func (x *RollbackEnforcementResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RollbackEnforcementResponse.ProtoReflect.Descriptor instead.
 func (*RollbackEnforcementResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{17}
+	return file_frien_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RollbackEnforcementResponse) GetStatus() string {
@@ -1656,7 +1711,7 @@ type ListEnforcementsRequest struct {
 
 func (x *ListEnforcementsRequest) Reset() {
 	*x = ListEnforcementsRequest{}
-	mi := &file_frien_proto_msgTypes[18]
+	mi := &file_frien_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1668,7 +1723,7 @@ func (x *ListEnforcementsRequest) String() string {
 func (*ListEnforcementsRequest) ProtoMessage() {}
 
 func (x *ListEnforcementsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[18]
+	mi := &file_frien_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1681,7 +1736,7 @@ func (x *ListEnforcementsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEnforcementsRequest.ProtoReflect.Descriptor instead.
 func (*ListEnforcementsRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{18}
+	return file_frien_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListEnforcementsRequest) GetAdapterFilter() string {
@@ -1707,7 +1762,7 @@ type ListEnforcementsResponse struct {
 
 func (x *ListEnforcementsResponse) Reset() {
 	*x = ListEnforcementsResponse{}
-	mi := &file_frien_proto_msgTypes[19]
+	mi := &file_frien_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1774,7 @@ func (x *ListEnforcementsResponse) String() string {
 func (*ListEnforcementsResponse) ProtoMessage() {}
 
 func (x *ListEnforcementsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[19]
+	mi := &file_frien_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +1787,7 @@ func (x *ListEnforcementsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEnforcementsResponse.ProtoReflect.Descriptor instead.
 func (*ListEnforcementsResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{19}
+	return file_frien_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ListEnforcementsResponse) GetEnforcements() []*EnforcementDecision {
@@ -1754,7 +1809,7 @@ type BreakglassRequest struct {
 
 func (x *BreakglassRequest) Reset() {
 	*x = BreakglassRequest{}
-	mi := &file_frien_proto_msgTypes[20]
+	mi := &file_frien_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1766,7 +1821,7 @@ func (x *BreakglassRequest) String() string {
 func (*BreakglassRequest) ProtoMessage() {}
 
 func (x *BreakglassRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[20]
+	mi := &file_frien_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1779,7 +1834,7 @@ func (x *BreakglassRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BreakglassRequest.ProtoReflect.Descriptor instead.
 func (*BreakglassRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{20}
+	return file_frien_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *BreakglassRequest) GetFlushEnforcement() bool {
@@ -1821,7 +1876,7 @@ type BreakglassResponse struct {
 
 func (x *BreakglassResponse) Reset() {
 	*x = BreakglassResponse{}
-	mi := &file_frien_proto_msgTypes[21]
+	mi := &file_frien_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1833,7 +1888,7 @@ func (x *BreakglassResponse) String() string {
 func (*BreakglassResponse) ProtoMessage() {}
 
 func (x *BreakglassResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[21]
+	mi := &file_frien_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1846,7 +1901,7 @@ func (x *BreakglassResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BreakglassResponse.ProtoReflect.Descriptor instead.
 func (*BreakglassResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{21}
+	return file_frien_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *BreakglassResponse) GetRulesRemoved() int64 {
@@ -1879,7 +1934,7 @@ type GetHardenReportRequest struct {
 
 func (x *GetHardenReportRequest) Reset() {
 	*x = GetHardenReportRequest{}
-	mi := &file_frien_proto_msgTypes[22]
+	mi := &file_frien_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1891,7 +1946,7 @@ func (x *GetHardenReportRequest) String() string {
 func (*GetHardenReportRequest) ProtoMessage() {}
 
 func (x *GetHardenReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[22]
+	mi := &file_frien_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1904,7 +1959,7 @@ func (x *GetHardenReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHardenReportRequest.ProtoReflect.Descriptor instead.
 func (*GetHardenReportRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{22}
+	return file_frien_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *GetHardenReportRequest) GetProfile() string {
@@ -1926,7 +1981,7 @@ type HardenCheck struct {
 
 func (x *HardenCheck) Reset() {
 	*x = HardenCheck{}
-	mi := &file_frien_proto_msgTypes[23]
+	mi := &file_frien_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1938,7 +1993,7 @@ func (x *HardenCheck) String() string {
 func (*HardenCheck) ProtoMessage() {}
 
 func (x *HardenCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[23]
+	mi := &file_frien_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1951,7 +2006,7 @@ func (x *HardenCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HardenCheck.ProtoReflect.Descriptor instead.
 func (*HardenCheck) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{23}
+	return file_frien_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *HardenCheck) GetName() string {
@@ -1992,7 +2047,7 @@ type GetHardenReportResponse struct {
 
 func (x *GetHardenReportResponse) Reset() {
 	*x = GetHardenReportResponse{}
-	mi := &file_frien_proto_msgTypes[24]
+	mi := &file_frien_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2004,7 +2059,7 @@ func (x *GetHardenReportResponse) String() string {
 func (*GetHardenReportResponse) ProtoMessage() {}
 
 func (x *GetHardenReportResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[24]
+	mi := &file_frien_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2017,7 +2072,7 @@ func (x *GetHardenReportResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetHardenReportResponse.ProtoReflect.Descriptor instead.
 func (*GetHardenReportResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{24}
+	return file_frien_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetHardenReportResponse) GetOverallStatus() string {
@@ -2044,7 +2099,7 @@ type TestPolicyRequest struct {
 
 func (x *TestPolicyRequest) Reset() {
 	*x = TestPolicyRequest{}
-	mi := &file_frien_proto_msgTypes[25]
+	mi := &file_frien_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2056,7 +2111,7 @@ func (x *TestPolicyRequest) String() string {
 func (*TestPolicyRequest) ProtoMessage() {}
 
 func (x *TestPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[25]
+	mi := &file_frien_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2069,7 +2124,7 @@ func (x *TestPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestPolicyRequest.ProtoReflect.Descriptor instead.
 func (*TestPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{25}
+	return file_frien_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *TestPolicyRequest) GetPolicyId() string {
@@ -2099,7 +2154,7 @@ type TestPolicyResponse struct {
 
 func (x *TestPolicyResponse) Reset() {
 	*x = TestPolicyResponse{}
-	mi := &file_frien_proto_msgTypes[26]
+	mi := &file_frien_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2111,7 +2166,7 @@ func (x *TestPolicyResponse) String() string {
 func (*TestPolicyResponse) ProtoMessage() {}
 
 func (x *TestPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[26]
+	mi := &file_frien_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2124,7 +2179,7 @@ func (x *TestPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestPolicyResponse.ProtoReflect.Descriptor instead.
 func (*TestPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{26}
+	return file_frien_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *TestPolicyResponse) GetDecision() string {
@@ -2177,7 +2232,7 @@ type GossipMessage struct {
 
 func (x *GossipMessage) Reset() {
 	*x = GossipMessage{}
-	mi := &file_frien_proto_msgTypes[27]
+	mi := &file_frien_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2189,7 +2244,7 @@ func (x *GossipMessage) String() string {
 func (*GossipMessage) ProtoMessage() {}
 
 func (x *GossipMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[27]
+	mi := &file_frien_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2202,7 +2257,7 @@ func (x *GossipMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipMessage.ProtoReflect.Descriptor instead.
 func (*GossipMessage) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{27}
+	return file_frien_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GossipMessage) GetProtoVersion() uint32 {
@@ -2261,13 +2316,15 @@ type AntiEntropyRequest struct {
 	Zone            string                 `protobuf:"bytes,3,opt,name=zone,proto3" json:"zone,omitempty"`
 	RootHash        string                 `protobuf:"bytes,4,opt,name=root_hash,json=rootHash,proto3" json:"root_hash,omitempty"`
 	SinceCheckpoint string                 `protobuf:"bytes,5,opt,name=since_checkpoint,json=sinceCheckpoint,proto3" json:"since_checkpoint,omitempty"`
+	Scope           string                 `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`                            // scope key being reconciled ("fleet" | "zone:<name>")
+	HaveOpIds       []string               `protobuf:"bytes,7,rep,name=have_op_ids,json=haveOpIds,proto3" json:"have_op_ids,omitempty"` // op_ids the requester already holds in this scope
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AntiEntropyRequest) Reset() {
 	*x = AntiEntropyRequest{}
-	mi := &file_frien_proto_msgTypes[28]
+	mi := &file_frien_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2279,7 +2336,7 @@ func (x *AntiEntropyRequest) String() string {
 func (*AntiEntropyRequest) ProtoMessage() {}
 
 func (x *AntiEntropyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[28]
+	mi := &file_frien_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2292,7 +2349,7 @@ func (x *AntiEntropyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AntiEntropyRequest.ProtoReflect.Descriptor instead.
 func (*AntiEntropyRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{28}
+	return file_frien_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *AntiEntropyRequest) GetProtoVersion() uint32 {
@@ -2330,6 +2387,278 @@ func (x *AntiEntropyRequest) GetSinceCheckpoint() string {
 	return ""
 }
 
+func (x *AntiEntropyRequest) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
+}
+
+func (x *AntiEntropyRequest) GetHaveOpIds() []string {
+	if x != nil {
+		return x.HaveOpIds
+	}
+	return nil
+}
+
+// SWIM probe messages. Membership updates piggyback on every probe and ack so
+// the failure detector and the roster disseminate over the same round-trips.
+type PeerUpdate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Addresses     []string               `protobuf:"bytes,2,rep,name=addresses,proto3" json:"addresses,omitempty"`
+	State         uint32                 `protobuf:"varint,3,opt,name=state,proto3" json:"state,omitempty"` // 0=alive 1=suspect 2=dead 3=left
+	Incarnation   uint64                 `protobuf:"varint,4,opt,name=incarnation,proto3" json:"incarnation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PeerUpdate) Reset() {
+	*x = PeerUpdate{}
+	mi := &file_frien_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PeerUpdate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PeerUpdate) ProtoMessage() {}
+
+func (x *PeerUpdate) ProtoReflect() protoreflect.Message {
+	mi := &file_frien_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PeerUpdate.ProtoReflect.Descriptor instead.
+func (*PeerUpdate) Descriptor() ([]byte, []int) {
+	return file_frien_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *PeerUpdate) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *PeerUpdate) GetAddresses() []string {
+	if x != nil {
+		return x.Addresses
+	}
+	return nil
+}
+
+func (x *PeerUpdate) GetState() uint32 {
+	if x != nil {
+		return x.State
+	}
+	return 0
+}
+
+func (x *PeerUpdate) GetIncarnation() uint64 {
+	if x != nil {
+		return x.Incarnation
+	}
+	return 0
+}
+
+type Ping struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProtoVersion  uint32                 `protobuf:"varint,1,opt,name=proto_version,json=protoVersion,proto3" json:"proto_version,omitempty"`
+	SenderNodeId  string                 `protobuf:"bytes,2,opt,name=sender_node_id,json=senderNodeId,proto3" json:"sender_node_id,omitempty"`
+	Updates       []*PeerUpdate          `protobuf:"bytes,3,rep,name=updates,proto3" json:"updates,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Ping) Reset() {
+	*x = Ping{}
+	mi := &file_frien_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Ping) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Ping) ProtoMessage() {}
+
+func (x *Ping) ProtoReflect() protoreflect.Message {
+	mi := &file_frien_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Ping.ProtoReflect.Descriptor instead.
+func (*Ping) Descriptor() ([]byte, []int) {
+	return file_frien_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *Ping) GetProtoVersion() uint32 {
+	if x != nil {
+		return x.ProtoVersion
+	}
+	return 0
+}
+
+func (x *Ping) GetSenderNodeId() string {
+	if x != nil {
+		return x.SenderNodeId
+	}
+	return ""
+}
+
+func (x *Ping) GetUpdates() []*PeerUpdate {
+	if x != nil {
+		return x.Updates
+	}
+	return nil
+}
+
+type PingReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProtoVersion  uint32                 `protobuf:"varint,1,opt,name=proto_version,json=protoVersion,proto3" json:"proto_version,omitempty"`
+	SenderNodeId  string                 `protobuf:"bytes,2,opt,name=sender_node_id,json=senderNodeId,proto3" json:"sender_node_id,omitempty"`
+	TargetAddress string                 `protobuf:"bytes,3,opt,name=target_address,json=targetAddress,proto3" json:"target_address,omitempty"`
+	Updates       []*PeerUpdate          `protobuf:"bytes,4,rep,name=updates,proto3" json:"updates,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PingReq) Reset() {
+	*x = PingReq{}
+	mi := &file_frien_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PingReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PingReq) ProtoMessage() {}
+
+func (x *PingReq) ProtoReflect() protoreflect.Message {
+	mi := &file_frien_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PingReq.ProtoReflect.Descriptor instead.
+func (*PingReq) Descriptor() ([]byte, []int) {
+	return file_frien_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *PingReq) GetProtoVersion() uint32 {
+	if x != nil {
+		return x.ProtoVersion
+	}
+	return 0
+}
+
+func (x *PingReq) GetSenderNodeId() string {
+	if x != nil {
+		return x.SenderNodeId
+	}
+	return ""
+}
+
+func (x *PingReq) GetTargetAddress() string {
+	if x != nil {
+		return x.TargetAddress
+	}
+	return ""
+}
+
+func (x *PingReq) GetUpdates() []*PeerUpdate {
+	if x != nil {
+		return x.Updates
+	}
+	return nil
+}
+
+type Ack struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ResponderNodeId string                 `protobuf:"bytes,1,opt,name=responder_node_id,json=responderNodeId,proto3" json:"responder_node_id,omitempty"`
+	Reachable       bool                   `protobuf:"varint,2,opt,name=reachable,proto3" json:"reachable,omitempty"` // ping-req: whether the relay reached the target
+	Updates         []*PeerUpdate          `protobuf:"bytes,3,rep,name=updates,proto3" json:"updates,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *Ack) Reset() {
+	*x = Ack{}
+	mi := &file_frien_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Ack) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Ack) ProtoMessage() {}
+
+func (x *Ack) ProtoReflect() protoreflect.Message {
+	mi := &file_frien_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Ack.ProtoReflect.Descriptor instead.
+func (*Ack) Descriptor() ([]byte, []int) {
+	return file_frien_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *Ack) GetResponderNodeId() string {
+	if x != nil {
+		return x.ResponderNodeId
+	}
+	return ""
+}
+
+func (x *Ack) GetReachable() bool {
+	if x != nil {
+		return x.Reachable
+	}
+	return false
+}
+
+func (x *Ack) GetUpdates() []*PeerUpdate {
+	if x != nil {
+		return x.Updates
+	}
+	return nil
+}
+
 type AntiEntropyResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	MissingOps     []*OperationEnvelope   `protobuf:"bytes,1,rep,name=missing_ops,json=missingOps,proto3" json:"missing_ops,omitempty"`
@@ -2340,7 +2669,7 @@ type AntiEntropyResponse struct {
 
 func (x *AntiEntropyResponse) Reset() {
 	*x = AntiEntropyResponse{}
-	mi := &file_frien_proto_msgTypes[29]
+	mi := &file_frien_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2352,7 +2681,7 @@ func (x *AntiEntropyResponse) String() string {
 func (*AntiEntropyResponse) ProtoMessage() {}
 
 func (x *AntiEntropyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[29]
+	mi := &file_frien_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2365,7 +2694,7 @@ func (x *AntiEntropyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AntiEntropyResponse.ProtoReflect.Descriptor instead.
 func (*AntiEntropyResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{29}
+	return file_frien_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *AntiEntropyResponse) GetMissingOps() []*OperationEnvelope {
@@ -2391,7 +2720,7 @@ type NegotiateRequest struct {
 
 func (x *NegotiateRequest) Reset() {
 	*x = NegotiateRequest{}
-	mi := &file_frien_proto_msgTypes[30]
+	mi := &file_frien_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2403,7 +2732,7 @@ func (x *NegotiateRequest) String() string {
 func (*NegotiateRequest) ProtoMessage() {}
 
 func (x *NegotiateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[30]
+	mi := &file_frien_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2416,7 +2745,7 @@ func (x *NegotiateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NegotiateRequest.ProtoReflect.Descriptor instead.
 func (*NegotiateRequest) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{30}
+	return file_frien_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *NegotiateRequest) GetSupportedVersions() []uint32 {
@@ -2435,7 +2764,7 @@ type NegotiateResponse struct {
 
 func (x *NegotiateResponse) Reset() {
 	*x = NegotiateResponse{}
-	mi := &file_frien_proto_msgTypes[31]
+	mi := &file_frien_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2447,7 +2776,7 @@ func (x *NegotiateResponse) String() string {
 func (*NegotiateResponse) ProtoMessage() {}
 
 func (x *NegotiateResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[31]
+	mi := &file_frien_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2460,7 +2789,7 @@ func (x *NegotiateResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NegotiateResponse.ProtoReflect.Descriptor instead.
 func (*NegotiateResponse) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{31}
+	return file_frien_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *NegotiateResponse) GetNegotiatedVersion() uint32 {
@@ -2485,7 +2814,7 @@ type MisbehaviorProof struct {
 
 func (x *MisbehaviorProof) Reset() {
 	*x = MisbehaviorProof{}
-	mi := &file_frien_proto_msgTypes[32]
+	mi := &file_frien_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2497,7 +2826,7 @@ func (x *MisbehaviorProof) String() string {
 func (*MisbehaviorProof) ProtoMessage() {}
 
 func (x *MisbehaviorProof) ProtoReflect() protoreflect.Message {
-	mi := &file_frien_proto_msgTypes[32]
+	mi := &file_frien_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2510,7 +2839,7 @@ func (x *MisbehaviorProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MisbehaviorProof.ProtoReflect.Descriptor instead.
 func (*MisbehaviorProof) Descriptor() ([]byte, []int) {
-	return file_frien_proto_rawDescGZIP(), []int{32}
+	return file_frien_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *MisbehaviorProof) GetId() string {
@@ -2628,7 +2957,12 @@ const file_frien_proto_rawDesc = "" +
 	"\x05owner\x18\x10 \x01(\tR\x05owner\x12\x18\n" +
 	"\aapplied\x18\x11 \x01(\bR\aapplied\x12\x1f\n" +
 	"\vrolled_back\x18\x12 \x01(\bR\n" +
-	"rolledBack\"\x9c\x03\n" +
+	"rolledBack\"F\n" +
+	"\n" +
+	"Retraction\x12 \n" +
+	"\ftarget_op_id\x18\x01 \x01(\tR\n" +
+	"targetOpId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x9c\x03\n" +
 	"\tPeerState\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x12\n" +
 	"\x04role\x18\x02 \x01(\tR\x04role\x12\x12\n" +
@@ -2771,13 +3105,34 @@ const file_frien_proto_rawDesc = "" +
 	"\x06deltas\x18\x04 \x03(\v2\x1b.frien.v1.OperationEnvelopeR\x06deltas\x12-\n" +
 	"\x12membership_updates\x18\x05 \x03(\tR\x11membershipUpdates\x12E\n" +
 	"\x10revocation_hints\x18\x06 \x03(\v2\x1a.frien.v1.RevocationRecordR\x0frevocationHints\x123\n" +
-	"\x16max_message_bytes_hint\x18\a \x01(\x04R\x13maxMessageBytesHint\"\xb8\x01\n" +
+	"\x16max_message_bytes_hint\x18\a \x01(\x04R\x13maxMessageBytesHint\"\xee\x01\n" +
 	"\x12AntiEntropyRequest\x12#\n" +
 	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12!\n" +
 	"\frequester_id\x18\x02 \x01(\tR\vrequesterId\x12\x12\n" +
 	"\x04zone\x18\x03 \x01(\tR\x04zone\x12\x1b\n" +
 	"\troot_hash\x18\x04 \x01(\tR\brootHash\x12)\n" +
-	"\x10since_checkpoint\x18\x05 \x01(\tR\x0fsinceCheckpoint\"|\n" +
+	"\x10since_checkpoint\x18\x05 \x01(\tR\x0fsinceCheckpoint\x12\x14\n" +
+	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x1e\n" +
+	"\vhave_op_ids\x18\a \x03(\tR\thaveOpIds\"{\n" +
+	"\n" +
+	"PeerUpdate\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
+	"\taddresses\x18\x02 \x03(\tR\taddresses\x12\x14\n" +
+	"\x05state\x18\x03 \x01(\rR\x05state\x12 \n" +
+	"\vincarnation\x18\x04 \x01(\x04R\vincarnation\"\x81\x01\n" +
+	"\x04Ping\x12#\n" +
+	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12$\n" +
+	"\x0esender_node_id\x18\x02 \x01(\tR\fsenderNodeId\x12.\n" +
+	"\aupdates\x18\x03 \x03(\v2\x14.frien.v1.PeerUpdateR\aupdates\"\xab\x01\n" +
+	"\aPingReq\x12#\n" +
+	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12$\n" +
+	"\x0esender_node_id\x18\x02 \x01(\tR\fsenderNodeId\x12%\n" +
+	"\x0etarget_address\x18\x03 \x01(\tR\rtargetAddress\x12.\n" +
+	"\aupdates\x18\x04 \x03(\v2\x14.frien.v1.PeerUpdateR\aupdates\"\x7f\n" +
+	"\x03Ack\x12*\n" +
+	"\x11responder_node_id\x18\x01 \x01(\tR\x0fresponderNodeId\x12\x1c\n" +
+	"\treachable\x18\x02 \x01(\bR\treachable\x12.\n" +
+	"\aupdates\x18\x03 \x03(\v2\x14.frien.v1.PeerUpdateR\aupdates\"|\n" +
 	"\x13AntiEntropyResponse\x12<\n" +
 	"\vmissing_ops\x18\x01 \x03(\v2\x1b.frien.v1.OperationEnvelopeR\n" +
 	"missingOps\x12'\n" +
@@ -2826,82 +3181,90 @@ func file_frien_proto_rawDescGZIP() []byte {
 	return file_frien_proto_rawDescData
 }
 
-var file_frien_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_frien_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_frien_proto_goTypes = []any{
 	(*OperationEnvelope)(nil),           // 0: frien.v1.OperationEnvelope
 	(*ThreatRecord)(nil),                // 1: frien.v1.ThreatRecord
 	(*EnforcementDecision)(nil),         // 2: frien.v1.EnforcementDecision
-	(*PeerState)(nil),                   // 3: frien.v1.PeerState
-	(*Checkpoint)(nil),                  // 4: frien.v1.Checkpoint
-	(*RevocationRecord)(nil),            // 5: frien.v1.RevocationRecord
-	(*GetStatusRequest)(nil),            // 6: frien.v1.GetStatusRequest
-	(*GetStatusResponse)(nil),           // 7: frien.v1.GetStatusResponse
-	(*ListPeersRequest)(nil),            // 8: frien.v1.ListPeersRequest
-	(*ListPeersResponse)(nil),           // 9: frien.v1.ListPeersResponse
-	(*ReportThreatRequest)(nil),         // 10: frien.v1.ReportThreatRequest
-	(*ReportThreatResponse)(nil),        // 11: frien.v1.ReportThreatResponse
-	(*ExplainDecisionRequest)(nil),      // 12: frien.v1.ExplainDecisionRequest
-	(*ExplainDecisionResponse)(nil),     // 13: frien.v1.ExplainDecisionResponse
-	(*SetEnforceModeRequest)(nil),       // 14: frien.v1.SetEnforceModeRequest
-	(*SetEnforceModeResponse)(nil),      // 15: frien.v1.SetEnforceModeResponse
-	(*RollbackEnforcementRequest)(nil),  // 16: frien.v1.RollbackEnforcementRequest
-	(*RollbackEnforcementResponse)(nil), // 17: frien.v1.RollbackEnforcementResponse
-	(*ListEnforcementsRequest)(nil),     // 18: frien.v1.ListEnforcementsRequest
-	(*ListEnforcementsResponse)(nil),    // 19: frien.v1.ListEnforcementsResponse
-	(*BreakglassRequest)(nil),           // 20: frien.v1.BreakglassRequest
-	(*BreakglassResponse)(nil),          // 21: frien.v1.BreakglassResponse
-	(*GetHardenReportRequest)(nil),      // 22: frien.v1.GetHardenReportRequest
-	(*HardenCheck)(nil),                 // 23: frien.v1.HardenCheck
-	(*GetHardenReportResponse)(nil),     // 24: frien.v1.GetHardenReportResponse
-	(*TestPolicyRequest)(nil),           // 25: frien.v1.TestPolicyRequest
-	(*TestPolicyResponse)(nil),          // 26: frien.v1.TestPolicyResponse
-	(*GossipMessage)(nil),               // 27: frien.v1.GossipMessage
-	(*AntiEntropyRequest)(nil),          // 28: frien.v1.AntiEntropyRequest
-	(*AntiEntropyResponse)(nil),         // 29: frien.v1.AntiEntropyResponse
-	(*NegotiateRequest)(nil),            // 30: frien.v1.NegotiateRequest
-	(*NegotiateResponse)(nil),           // 31: frien.v1.NegotiateResponse
-	(*MisbehaviorProof)(nil),            // 32: frien.v1.MisbehaviorProof
+	(*Retraction)(nil),                  // 3: frien.v1.Retraction
+	(*PeerState)(nil),                   // 4: frien.v1.PeerState
+	(*Checkpoint)(nil),                  // 5: frien.v1.Checkpoint
+	(*RevocationRecord)(nil),            // 6: frien.v1.RevocationRecord
+	(*GetStatusRequest)(nil),            // 7: frien.v1.GetStatusRequest
+	(*GetStatusResponse)(nil),           // 8: frien.v1.GetStatusResponse
+	(*ListPeersRequest)(nil),            // 9: frien.v1.ListPeersRequest
+	(*ListPeersResponse)(nil),           // 10: frien.v1.ListPeersResponse
+	(*ReportThreatRequest)(nil),         // 11: frien.v1.ReportThreatRequest
+	(*ReportThreatResponse)(nil),        // 12: frien.v1.ReportThreatResponse
+	(*ExplainDecisionRequest)(nil),      // 13: frien.v1.ExplainDecisionRequest
+	(*ExplainDecisionResponse)(nil),     // 14: frien.v1.ExplainDecisionResponse
+	(*SetEnforceModeRequest)(nil),       // 15: frien.v1.SetEnforceModeRequest
+	(*SetEnforceModeResponse)(nil),      // 16: frien.v1.SetEnforceModeResponse
+	(*RollbackEnforcementRequest)(nil),  // 17: frien.v1.RollbackEnforcementRequest
+	(*RollbackEnforcementResponse)(nil), // 18: frien.v1.RollbackEnforcementResponse
+	(*ListEnforcementsRequest)(nil),     // 19: frien.v1.ListEnforcementsRequest
+	(*ListEnforcementsResponse)(nil),    // 20: frien.v1.ListEnforcementsResponse
+	(*BreakglassRequest)(nil),           // 21: frien.v1.BreakglassRequest
+	(*BreakglassResponse)(nil),          // 22: frien.v1.BreakglassResponse
+	(*GetHardenReportRequest)(nil),      // 23: frien.v1.GetHardenReportRequest
+	(*HardenCheck)(nil),                 // 24: frien.v1.HardenCheck
+	(*GetHardenReportResponse)(nil),     // 25: frien.v1.GetHardenReportResponse
+	(*TestPolicyRequest)(nil),           // 26: frien.v1.TestPolicyRequest
+	(*TestPolicyResponse)(nil),          // 27: frien.v1.TestPolicyResponse
+	(*GossipMessage)(nil),               // 28: frien.v1.GossipMessage
+	(*AntiEntropyRequest)(nil),          // 29: frien.v1.AntiEntropyRequest
+	(*PeerUpdate)(nil),                  // 30: frien.v1.PeerUpdate
+	(*Ping)(nil),                        // 31: frien.v1.Ping
+	(*PingReq)(nil),                     // 32: frien.v1.PingReq
+	(*Ack)(nil),                         // 33: frien.v1.Ack
+	(*AntiEntropyResponse)(nil),         // 34: frien.v1.AntiEntropyResponse
+	(*NegotiateRequest)(nil),            // 35: frien.v1.NegotiateRequest
+	(*NegotiateResponse)(nil),           // 36: frien.v1.NegotiateResponse
+	(*MisbehaviorProof)(nil),            // 37: frien.v1.MisbehaviorProof
 }
 var file_frien_proto_depIdxs = []int32{
-	3,  // 0: frien.v1.ListPeersResponse.peers:type_name -> frien.v1.PeerState
+	4,  // 0: frien.v1.ListPeersResponse.peers:type_name -> frien.v1.PeerState
 	2,  // 1: frien.v1.ListEnforcementsResponse.enforcements:type_name -> frien.v1.EnforcementDecision
-	23, // 2: frien.v1.GetHardenReportResponse.checks:type_name -> frien.v1.HardenCheck
+	24, // 2: frien.v1.GetHardenReportResponse.checks:type_name -> frien.v1.HardenCheck
 	0,  // 3: frien.v1.GossipMessage.deltas:type_name -> frien.v1.OperationEnvelope
-	5,  // 4: frien.v1.GossipMessage.revocation_hints:type_name -> frien.v1.RevocationRecord
-	0,  // 5: frien.v1.AntiEntropyResponse.missing_ops:type_name -> frien.v1.OperationEnvelope
-	0,  // 6: frien.v1.MisbehaviorProof.op_a:type_name -> frien.v1.OperationEnvelope
-	0,  // 7: frien.v1.MisbehaviorProof.op_b:type_name -> frien.v1.OperationEnvelope
-	6,  // 8: frien.v1.AdminService.GetStatus:input_type -> frien.v1.GetStatusRequest
-	8,  // 9: frien.v1.AdminService.ListPeers:input_type -> frien.v1.ListPeersRequest
-	10, // 10: frien.v1.AdminService.ReportThreat:input_type -> frien.v1.ReportThreatRequest
-	12, // 11: frien.v1.AdminService.ExplainDecision:input_type -> frien.v1.ExplainDecisionRequest
-	14, // 12: frien.v1.AdminService.SetEnforceMode:input_type -> frien.v1.SetEnforceModeRequest
-	16, // 13: frien.v1.AdminService.RollbackEnforcement:input_type -> frien.v1.RollbackEnforcementRequest
-	18, // 14: frien.v1.AdminService.ListEnforcements:input_type -> frien.v1.ListEnforcementsRequest
-	20, // 15: frien.v1.AdminService.Breakglass:input_type -> frien.v1.BreakglassRequest
-	22, // 16: frien.v1.AdminService.GetHardenReport:input_type -> frien.v1.GetHardenReportRequest
-	25, // 17: frien.v1.AdminService.TestPolicy:input_type -> frien.v1.TestPolicyRequest
-	27, // 18: frien.v1.PeerService.Gossip:input_type -> frien.v1.GossipMessage
-	28, // 19: frien.v1.PeerService.AntiEntropy:input_type -> frien.v1.AntiEntropyRequest
-	30, // 20: frien.v1.PeerService.Negotiate:input_type -> frien.v1.NegotiateRequest
-	7,  // 21: frien.v1.AdminService.GetStatus:output_type -> frien.v1.GetStatusResponse
-	9,  // 22: frien.v1.AdminService.ListPeers:output_type -> frien.v1.ListPeersResponse
-	11, // 23: frien.v1.AdminService.ReportThreat:output_type -> frien.v1.ReportThreatResponse
-	13, // 24: frien.v1.AdminService.ExplainDecision:output_type -> frien.v1.ExplainDecisionResponse
-	15, // 25: frien.v1.AdminService.SetEnforceMode:output_type -> frien.v1.SetEnforceModeResponse
-	17, // 26: frien.v1.AdminService.RollbackEnforcement:output_type -> frien.v1.RollbackEnforcementResponse
-	19, // 27: frien.v1.AdminService.ListEnforcements:output_type -> frien.v1.ListEnforcementsResponse
-	21, // 28: frien.v1.AdminService.Breakglass:output_type -> frien.v1.BreakglassResponse
-	24, // 29: frien.v1.AdminService.GetHardenReport:output_type -> frien.v1.GetHardenReportResponse
-	26, // 30: frien.v1.AdminService.TestPolicy:output_type -> frien.v1.TestPolicyResponse
-	27, // 31: frien.v1.PeerService.Gossip:output_type -> frien.v1.GossipMessage
-	29, // 32: frien.v1.PeerService.AntiEntropy:output_type -> frien.v1.AntiEntropyResponse
-	31, // 33: frien.v1.PeerService.Negotiate:output_type -> frien.v1.NegotiateResponse
-	21, // [21:34] is the sub-list for method output_type
-	8,  // [8:21] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	6,  // 4: frien.v1.GossipMessage.revocation_hints:type_name -> frien.v1.RevocationRecord
+	30, // 5: frien.v1.Ping.updates:type_name -> frien.v1.PeerUpdate
+	30, // 6: frien.v1.PingReq.updates:type_name -> frien.v1.PeerUpdate
+	30, // 7: frien.v1.Ack.updates:type_name -> frien.v1.PeerUpdate
+	0,  // 8: frien.v1.AntiEntropyResponse.missing_ops:type_name -> frien.v1.OperationEnvelope
+	0,  // 9: frien.v1.MisbehaviorProof.op_a:type_name -> frien.v1.OperationEnvelope
+	0,  // 10: frien.v1.MisbehaviorProof.op_b:type_name -> frien.v1.OperationEnvelope
+	7,  // 11: frien.v1.AdminService.GetStatus:input_type -> frien.v1.GetStatusRequest
+	9,  // 12: frien.v1.AdminService.ListPeers:input_type -> frien.v1.ListPeersRequest
+	11, // 13: frien.v1.AdminService.ReportThreat:input_type -> frien.v1.ReportThreatRequest
+	13, // 14: frien.v1.AdminService.ExplainDecision:input_type -> frien.v1.ExplainDecisionRequest
+	15, // 15: frien.v1.AdminService.SetEnforceMode:input_type -> frien.v1.SetEnforceModeRequest
+	17, // 16: frien.v1.AdminService.RollbackEnforcement:input_type -> frien.v1.RollbackEnforcementRequest
+	19, // 17: frien.v1.AdminService.ListEnforcements:input_type -> frien.v1.ListEnforcementsRequest
+	21, // 18: frien.v1.AdminService.Breakglass:input_type -> frien.v1.BreakglassRequest
+	23, // 19: frien.v1.AdminService.GetHardenReport:input_type -> frien.v1.GetHardenReportRequest
+	26, // 20: frien.v1.AdminService.TestPolicy:input_type -> frien.v1.TestPolicyRequest
+	28, // 21: frien.v1.PeerService.Gossip:input_type -> frien.v1.GossipMessage
+	29, // 22: frien.v1.PeerService.AntiEntropy:input_type -> frien.v1.AntiEntropyRequest
+	35, // 23: frien.v1.PeerService.Negotiate:input_type -> frien.v1.NegotiateRequest
+	8,  // 24: frien.v1.AdminService.GetStatus:output_type -> frien.v1.GetStatusResponse
+	10, // 25: frien.v1.AdminService.ListPeers:output_type -> frien.v1.ListPeersResponse
+	12, // 26: frien.v1.AdminService.ReportThreat:output_type -> frien.v1.ReportThreatResponse
+	14, // 27: frien.v1.AdminService.ExplainDecision:output_type -> frien.v1.ExplainDecisionResponse
+	16, // 28: frien.v1.AdminService.SetEnforceMode:output_type -> frien.v1.SetEnforceModeResponse
+	18, // 29: frien.v1.AdminService.RollbackEnforcement:output_type -> frien.v1.RollbackEnforcementResponse
+	20, // 30: frien.v1.AdminService.ListEnforcements:output_type -> frien.v1.ListEnforcementsResponse
+	22, // 31: frien.v1.AdminService.Breakglass:output_type -> frien.v1.BreakglassResponse
+	25, // 32: frien.v1.AdminService.GetHardenReport:output_type -> frien.v1.GetHardenReportResponse
+	27, // 33: frien.v1.AdminService.TestPolicy:output_type -> frien.v1.TestPolicyResponse
+	28, // 34: frien.v1.PeerService.Gossip:output_type -> frien.v1.GossipMessage
+	34, // 35: frien.v1.PeerService.AntiEntropy:output_type -> frien.v1.AntiEntropyResponse
+	36, // 36: frien.v1.PeerService.Negotiate:output_type -> frien.v1.NegotiateResponse
+	24, // [24:37] is the sub-list for method output_type
+	11, // [11:24] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_frien_proto_init() }
@@ -2915,7 +3278,7 @@ func file_frien_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_frien_proto_rawDesc), len(file_frien_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

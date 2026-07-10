@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	AlgorithmEd25519  = "ed25519"
-	AlgorithmMLDSA65  = "ml-dsa-65"
+	AlgorithmEd25519 = "ed25519"
+	AlgorithmMLDSA65 = "ml-dsa-65"
 )
 
 // Signer produces signatures over canonical envelope content.
@@ -73,7 +73,7 @@ func (s *Ed25519Signer) Sign(msg []byte) ([]byte, error) {
 	return ed25519.Sign(s.privateKey, msg), nil
 }
 
-func (s *Ed25519Signer) Algorithm() string  { return AlgorithmEd25519 }
+func (s *Ed25519Signer) Algorithm() string   { return AlgorithmEd25519 }
 func (s *Ed25519Signer) PublicKeyID() string { return s.keyID }
 
 // PublicKey returns the ed25519 public key for use in cert verification.
@@ -138,7 +138,7 @@ func (s *MLDSASigner) Sign(msg []byte) ([]byte, error) {
 	return sig, nil
 }
 
-func (s *MLDSASigner) Algorithm() string  { return AlgorithmMLDSA65 }
+func (s *MLDSASigner) Algorithm() string   { return AlgorithmMLDSA65 }
 func (s *MLDSASigner) PublicKeyID() string { return s.keyID }
 
 // PublicKey returns the ML-DSA-65 public key bytes for distribution.
@@ -150,8 +150,8 @@ func (s *MLDSASigner) PublicKeyBytes() []byte {
 // ─── HybridSigner ─────────────────────────────────────────────────────────────
 // HybridResult holds both signatures from a hybrid sign operation.
 type HybridResult struct {
-	KeyID     string
-	Signature []byte
+	KeyID        string
+	Signature    []byte
 	PQCAlgorithm string
 	PQCKeyID     string
 	PQCSignature []byte

@@ -23,7 +23,7 @@ Every data-plane and control-plane object travels inside a signed versioned enve
 {
   "proto_version": 1,
   "op_id": "op_01HZX...",
-  "op_type": "threat_record | enforcement_decision | checkpoint | revocation | policy",
+  "op_type": "threat_record | enforcement_decision | retraction | checkpoint | revocation | policy",
   "node_id": "node.edge.eu-west.01",
   "hlc": "2026-05-16T10:20:30.000Z-4-node.edge.eu-west.01",
   "seq": 184,
@@ -105,6 +105,8 @@ Fields:
 ```
 
 `applied` is `false` in observe mode. `kernel_timeout` ensures the rule self-expires in the kernel even if the daemon dies. `rollback_token` enables explicit operator rollback.
+
+**Immutable wire object vs. local columns.** The gossiped `EnforcementDecision` is immutable; only the fields above the `rollback_token` line travel in the signed envelope. `applied` and `rolled_back` are **local enforcer state**, stored as columns in the bbolt `decisions` bucket on the node that owns the rule — they are never merged into the replicated CRDT set. Two nodes may legitimately hold the same decision with different local `applied` flags.
 
 ---
 
@@ -197,6 +199,22 @@ Checkpoints are verifiable without retaining every operation (CT-style tree-head
 
 ---
 
+## CRDT State Model
+
+The replicated state is a **grow-only set of immutable signed `OperationEnvelope`s keyed by `op_id`**. This is the simplest correct CRDT for frien's data, and the choice is deliberate:
+
+- Every op has a globally unique, single-author `op_id`, so two replicas never hold competing writes to the same key. **Merge is therefore pure set-union** — a join-semilattice that is commutative, associative, and idempotent, giving strong eventual consistency by construction. No OR-Set dots, no add-wins arbitration, no tombstone garbage collection.
+- All mutable-looking behavior is a **projection** over the immutable set. Retraction, equivocation, and quorum-counting are pure functions of the set; expiry also reads the local clock, so it converges as clocks agree (the set itself always converges by union):
+  - **Record TTL / expiry** — `present(op)` becomes false once `local_now ≥ expires_at`, where `expires_at` is the **origin-declared, policy-capped** field carried in the immutable op. Because the bound is in the op, every replica targets the same instant and a late-delivered already-expired op is never present (no resurrection); the checkpoint watermark prunes it so anti-entropy cannot re-offer it.
+  - **Author retraction** — an `op_type: "retraction"` op referencing a target `op_id`, accepted only if signed by the original author with a higher `seq`. Single-writer LWW by `seq`; no cross-actor race. This is the one tombstone, but a causally-later single-writer one — no concurrent add/remove arbitration.
+  - **Quorum window (separate from TTL)** — counts present ops per indicator by distinct identity within a window measured against the **local receive clock**, so origin skew cannot move quorum. TTL governs validity duration; the quorum window governs receive recency. The set is never collapsed by indicator: distinct reports stay distinct.
+
+**Why not OR-Set or LWW-element-set.** An OR-Set solves concurrent same-key add/remove — impossible here, and its collapsing would erase the distinct-identity quorum signal. A keep-one LWW-element-set is unsafe for accountability: two ops at the same `(node_id, seq)` are **equivocation evidence**, and union preserves both while LWW would discard one.
+
+**Equivocation index.** On apply, the node maintains `(node_id → seq → op_hash)`. A second, distinct `op_hash` at an existing `(node_id, seq)` is equivocation → portable proof → quarantine + revocation proposal (no causal parents-DAG required).
+
+**Bounds.** The set is bounded by TTL expiry + checkpoint compaction below, and by admission control (inbound ops are rate- and size-bounded per scope, same path as locally-created ops) above. Distinct records cannot be coalesced (distinct ids), so inbound state has an explicit per-scope cap with shed-on-overflow.
+
 ## bbolt Bucket Layout
 
 ```
@@ -209,8 +227,13 @@ frien.db
 ├── bucket: "policies"       → policy_id:version → Policy (JSON)
 ├── bucket: "checkpoints"    → checkpoint_id → Checkpoint (JSON)
 ├── bucket: "audit"          → audit_id → AuditEntry (JSON)
-└── bucket: "op_dedup"       → op_id → "1" (replay window dedup)
+├── bucket: "op_dedup"       → op_id → "1" (replay window dedup)
+├── bucket: "author_seq"     → node_id:seq → op_hash (equivocation index)
+├── bucket: "peer_watermark" → node_id → highest observed HLC (compaction stable cut)
+└── bucket: "meta"           → schema_version, persisted HLC, node bootstrap state
 ```
+
+`op_dedup` keyed by `op_id` makes replay rejection a single lookup. `author_seq` makes equivocation a single lookup: a second distinct `op_hash` at an existing `node_id:seq` is a proof. The persisted HLC in `meta` is reloaded on startup so the clock never regresses across a restart.
 
 ---
 

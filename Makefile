@@ -49,7 +49,13 @@ lint:
 # ─── Proto ────────────────────────────────────────────────────────────────────
 
 proto-gen:
-	buf generate
+	protoc \
+	  --proto_path=$(PROTO_DIR) \
+	  --go_out=$(PROTO_OUT) \
+	  --go_opt=paths=source_relative \
+	  --go-grpc_out=$(PROTO_OUT) \
+	  --go-grpc_opt=paths=source_relative \
+	  $(PROTO_DIR)/frien.proto
 
 # ─── Vulnerability scan ───────────────────────────────────────────────────────
 

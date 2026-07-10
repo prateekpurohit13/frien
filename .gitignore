@@ -31,24 +31,38 @@ go.work.sum
 # .idea/
 # .vscode/
 
+# ─── frien-specific ─────────────────────────────────────────────────────────
 # Build output
 /build/
 
-# Keys, certs, and secrets — never commit
+# Stray binaries built at the repo root (always build into ./build instead)
+/friend
+/frienctl
+/frien-enforcer
+
+# Private keys and certificates — must never be committed
 *.key
-*.pem
 *.crt
+*.pem
 *.p12
 *.pfx
-!**/testdata/**/*.key
-!**/testdata/**/*.pem
-!**/testdata/**/*.crt
+keys/
 
-# WAL, bbolt data, and other runtime state
-*.wal
+# Local node state (WAL, bbolt, snapshots, sockets)
 *.db
-wal/
-data/
-
-# Admin socket (should never exist as a file in-tree, but guard anyway)
+*.snap
 *.sock
+/wal/
+/snapshots/
+/run/
+
+# Local development config (real config carries deployment-specific paths/secrets;
+# the committed example is .env.example). Keep a sample as frien.example.yaml if needed.
+/frien.yaml
+/config.yaml
+
+# Generated SBOM / signing artifacts
+*.sbom
+*.spdx.json
+*.sig
+*.pem.bundle

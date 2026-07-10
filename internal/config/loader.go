@@ -73,9 +73,9 @@ func defaultConfig() *Config {
 			TrustTier: "standard",
 		},
 		Identity: IdentityConfig{
-			CAMode:           "file",           // default: file-based CA cert
+			CAMode:           "file",                     // default: file-based CA cert
 			SigningAlgorithm: "hybrid-ed25519-ml-dsa-65", // send both; receiver picks
-			PQCKem:           "x25519mlkem768", // hybrid PQC+classical TLS key exchange
+			PQCKem:           "x25519mlkem768",           // hybrid PQC+classical TLS key exchange
 			CABundleRefresh:  "1h",
 		},
 		Transport: TransportConfig{

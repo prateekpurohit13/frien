@@ -62,8 +62,8 @@ func Verify(
 // Classical key comes from the node's mTLS certificate.
 // PQC key is distributed out-of-band (gossip, config, or key exchange message).
 type PeerPublicKeys struct {
-	Ed25519    ed25519.PublicKey
-	MLDSAPub   []byte
+	Ed25519  ed25519.PublicKey
+	MLDSAPub []byte
 }
 
 // keyFingerprint returns a hex-encoded SHA-256 fingerprint of raw public key bytes.

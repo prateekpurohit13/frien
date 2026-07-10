@@ -1,125 +1,137 @@
----- MODULE frien ----
-(* Skeleton spec for the frien mesh: membership FSM, partition-safe quorum
-   before enforcement, misbehavior quarantine, and mesh-wide revocation.
-   Not yet model-checked end-to-end; fleshes out module structure and the
-   core safety properties so Phase 4/5 implementation can be checked against
-   it incrementally. *)
-
-EXTENDS Naturals, FiniteSets, Sequences, TLC
+-------------------------------- MODULE frien --------------------------------
+(***************************************************************************)
+(* TLA+ specification skeleton for frien's safety-critical protocols:      *)
+(* membership, partition-safe quorum, quarantine, and revocation.          *)
+(*                                                                         *)
+(* This is the Phase 0 skeleton (docs/FRIEN_ARCHITECTURE.md §16). It models *)
+(* the state and the safety INVARIANTS the design must preserve. The action *)
+(* relation is intentionally abstract; later phases refine Next as each     *)
+(* protocol is implemented, but the invariants below are the contract.     *)
+(*                                                                         *)
+(* The headline property is QuorumSafety: a node in a minority partition    *)
+(* must never take fleet-scoped enforcement. frien favors consistency of    *)
+(* the enforcement decision over availability of enforcement (an explicit   *)
+(* CAP choice, docs §8.1).                                                  *)
+(***************************************************************************)
+EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
-    Node,           \* set of node identifiers in the mesh
-    Quorum,         \* set of subsets of Node that constitute a valid quorum
-    NULL
+    Nodes,           \* set of node identities (distinct CA-issued certs)
+    SelfPlanes,      \* protected targets that must never be enforced against
+    RequiredWeight,  \* quorum weight required for fleet-scoped enforcement
+    Weight           \* [Nodes -> Nat]: trust-tier weight per node
 
-ASSUME Quorum \subseteq SUBSET Node
+ASSUME
+    /\ RequiredWeight \in Nat
+    /\ Weight \in [Nodes -> Nat]
 
 VARIABLES
-    membership,     \* [Node -> {"alive", "suspect", "dead", "left"}]
-    revoked,        \* subset of Node whose certs have been revoked
-    quarantined,    \* subset of Node quarantined after a misbehavior proof
-    misbehaved,     \* subset of Node with an outstanding misbehavior proof
-    enforced        \* set of enforcement decisions applied, each a
-                    \* record [approvers: subset Node, target: Node]
+    memberState,   \* [Nodes -> {"alive","suspect","dead","left"}]
+    revoked,       \* subset of Nodes: operator-signed revocations (monotonic)
+    quarantined,   \* subset of Nodes: behavioral, immediate, local
+    partition,     \* subset of Nodes the acting node can currently observe
+    enforced       \* subset of targets currently under fleet-scoped enforcement
 
-vars == <<membership, revoked, quarantined, misbehaved, enforced>>
+vars == <<memberState, revoked, quarantined, partition, enforced>>
 
-TypeOK ==
-    /\ membership \in [Node -> {"alive", "suspect", "dead", "left"}]
-    /\ revoked \subseteq Node
-    /\ quarantined \subseteq Node
-    /\ misbehaved \subseteq Node
-    /\ enforced \subseteq [approvers: SUBSET Node, target: Node]
+MemberStates == {"alive", "suspect", "dead", "left"}
 
+----------------------------------------------------------------------------
+(* A node may contribute to quorum only if it is a distinct identity that is *)
+(* alive, not revoked, not quarantined, and observable in the partition.     *)
+EligibleVoters ==
+    { n \in partition :
+        /\ memberState[n] = "alive"
+        /\ n \notin revoked
+        /\ n \notin quarantined }
+
+ObservedWeight == \* sum of weights of eligible voters
+    LET Sum[S \in SUBSET Nodes] ==
+            IF S = {} THEN 0
+            ELSE LET x == CHOOSE e \in S : TRUE
+                 IN Weight[x] + Sum[S \ {x}]
+    IN Sum[EligibleVoters]
+
+QuorumMet == ObservedWeight >= RequiredWeight
+
+----------------------------------------------------------------------------
 Init ==
-    /\ membership = [n \in Node |-> "alive"]
+    /\ memberState = [n \in Nodes |-> "alive"]
     /\ revoked = {}
     /\ quarantined = {}
-    /\ misbehaved = {}
+    /\ partition = Nodes
     /\ enforced = {}
 
-\* ─── Membership FSM ────────────────────────────────────────────────────────
+(* --- Abstract actions (refined per phase) --- *)
 
-Suspect(n) ==
-    /\ membership[n] = "alive"
-    /\ membership' = [membership EXCEPT ![n] = "suspect"]
-    /\ UNCHANGED <<revoked, quarantined, misbehaved, enforced>>
+\* The network partitions: the acting node now observes only a subset P.
+Partition(P) ==
+    /\ P \subseteq Nodes
+    /\ partition' = P
+    /\ UNCHANGED <<memberState, revoked, quarantined, enforced>>
 
-Recover(n) ==
-    /\ membership[n] = "suspect"
-    /\ membership' = [membership EXCEPT ![n] = "alive"]
-    /\ UNCHANGED <<revoked, quarantined, misbehaved, enforced>>
-
-Declare_Dead(n) ==
-    /\ membership[n] = "suspect"
-    /\ membership' = [membership EXCEPT ![n] = "dead"]
-    /\ UNCHANGED <<revoked, quarantined, misbehaved, enforced>>
-
-Leave(n) ==
-    /\ membership[n] \in {"alive", "suspect"}
-    /\ membership' = [membership EXCEPT ![n] = "left"]
-    /\ UNCHANGED <<revoked, quarantined, misbehaved, enforced>>
-
-\* ─── Misbehavior, quarantine, and revocation ───────────────────────────────
-
-\* A node that equivocates (produces conflicting DAG entries for the same
-\* sequence number) is flagged; quarantine is automatic and local, revocation
-\* requires an operator-signed action out-of-band.
-DetectMisbehavior(n) ==
-    /\ n \notin misbehaved
-    /\ misbehaved' = misbehaved \union {n}
-    /\ quarantined' = quarantined \union {n}
-    /\ UNCHANGED <<membership, revoked, enforced>>
-
+\* Operator-signed revocation. Monotonic: a revoked identity is never un-revoked.
 Revoke(n) ==
-    /\ n \notin revoked
-    /\ revoked' = revoked \union {n}
-    /\ UNCHANGED <<membership, quarantined, misbehaved, enforced>>
+    /\ n \in Nodes
+    /\ revoked' = revoked \cup {n}
+    /\ UNCHANGED <<memberState, quarantined, partition, enforced>>
 
-\* ─── Enforcement ────────────────────────────────────────────────────────────
+\* Behavioral quarantine on equivocation detection (immediate, local).
+Quarantine(n) ==
+    /\ n \in Nodes
+    /\ quarantined' = quarantined \cup {n}
+    /\ UNCHANGED <<memberState, revoked, partition, enforced>>
 
-\* Enforcement may only be applied if the approving set of nodes forms a
-\* valid quorum, none of the approvers are revoked or quarantined, and the
-\* target itself is not the sole source of the decision (no self-approval).
-CanEnforce(approvers, target) ==
-    /\ approvers \in Quorum
-    /\ approvers \cap revoked = {}
-    /\ approvers \cap quarantined = {}
-    /\ target \notin approvers
-
-Enforce(approvers, target) ==
-    /\ CanEnforce(approvers, target)
-    /\ enforced' = enforced \union {[approvers |-> approvers, target |-> target]}
-    /\ UNCHANGED <<membership, revoked, quarantined, misbehaved>>
+\* Fleet-scoped enforcement is permitted only when quorum is met AND the target
+\* is not a protected self-plane. This is the guarded transition the invariants
+\* below constrain.
+Enforce(target) ==
+    /\ QuorumMet
+    /\ target \notin SelfPlanes
+    /\ enforced' = enforced \cup {target}
+    /\ UNCHANGED <<memberState, revoked, quarantined, partition>>
 
 Next ==
-    \/ \E n \in Node : Suspect(n) \/ Recover(n) \/ Declare_Dead(n) \/ Leave(n)
-    \/ \E n \in Node : DetectMisbehavior(n)
-    \/ \E n \in Node : Revoke(n)
-    \/ \E approvers \in Quorum, target \in Node : Enforce(approvers, target)
+    \/ \E P \in SUBSET Nodes : Partition(P)
+    \/ \E n \in Nodes : Revoke(n)
+    \/ \E n \in Nodes : Quarantine(n)
+    \/ \E t \in (SelfPlanes \cup Nodes) : Enforce(t)
 
 Spec == Init /\ [][Next]_vars
 
-\* ─── Safety properties ──────────────────────────────────────────────────────
+----------------------------------------------------------------------------
+(*                              SAFETY INVARIANTS                            *)
+----------------------------------------------------------------------------
 
-\* No enforcement decision was ever approved by a coalition smaller than a
-\* quorum, nor by a set containing a revoked or quarantined node.
-NoSubQuorumEnforcement ==
-    \A e \in enforced :
-        /\ e.approvers \in Quorum
-        /\ e.approvers \cap revoked = {}
-        /\ e.approvers \cap quarantined = {}
+TypeOK ==
+    /\ memberState \in [Nodes -> MemberStates]
+    /\ revoked \subseteq Nodes
+    /\ quarantined \subseteq Nodes
+    /\ partition \subseteq Nodes
+    /\ enforced \subseteq (SelfPlanes \cup Nodes)
 
-\* A revoked node can never subsequently be part of an approving quorum.
-RevokedNeverApproves ==
-    \A e \in enforced : e.approvers \cap revoked = {}
+\* QuorumSafety: nothing is ever enforced unless quorum was met. Equivalently, a
+\* minority partition (insufficient observed weight) cannot enforce.
+QuorumSafety == (enforced # {}) => QuorumMet
 
-\* Once quarantined, a node stays quarantined until an explicit (unmodeled
-\* here) operator clearance action -- this skeleton has no such action yet,
-\* so quarantine is monotonically non-decreasing.
-QuarantineMonotonic ==
-    [][quarantined \subseteq quarantined']_vars
+\* NoSelfLockout: frien's own planes are never enforced against.
+NoSelfLockout == \A t \in SelfPlanes : t \notin enforced
 
-THEOREM Spec => [](TypeOK /\ NoSubQuorumEnforcement /\ RevokedNeverApproves)
+\* QuarantineExcludesQuorum: a quarantined node never counts as an eligible voter.
+QuarantineExcludesQuorum == \A n \in quarantined : n \notin EligibleVoters
 
-====
+\* RevocationExcludesQuorum: a revoked identity never counts toward quorum.
+RevocationExcludesQuorum == \A n \in revoked : n \notin EligibleVoters
+
+Safety ==
+    /\ TypeOK
+    /\ QuorumSafety
+    /\ NoSelfLockout
+    /\ QuarantineExcludesQuorum
+    /\ RevocationExcludesQuorum
+
+(* Check with TLC using a small finite model, e.g.:                          *)
+(*   Nodes = {n1, n2, n3}, SelfPlanes = {self}, RequiredWeight = 3,          *)
+(*   Weight = (n1 :> 1 @@ n2 :> 1 @@ n3 :> 1)                                 *)
+(* INVARIANT Safety                                                          *)
+=============================================================================
