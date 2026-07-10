@@ -38,17 +38,21 @@ type AddResult struct {
 // without coordination. Expiry, retraction, and quorum are projections over the
 // set (see project.go), not part of the merge.
 type OpSet struct {
-	mu         sync.RWMutex
-	ops        map[string]*frienv1.OperationEnvelope
-	seqIndex   map[string]map[uint64]string   // node_id -> seq -> first op_id seen
-	scopeIndex map[string]map[string]struct{} // scope key -> set of op_id
+	mu          sync.RWMutex
+	ops         map[string]*frienv1.OperationEnvelope
+	seqIndex    map[string]map[uint64]string   // node_id -> seq -> first op_id ever seen (kept forever, see CompactBelow)
+	scopeIndex  map[string]map[string]struct{} // scope key -> set of op_id
+	opScope     map[string]string              // op_id -> the scope key it was indexed under
+	equivocated map[string]struct{}            // op_id -> present if it is part of a detected fork; never compacted
 }
 
 func NewOpSet() *OpSet {
 	return &OpSet{
-		ops:        make(map[string]*frienv1.OperationEnvelope),
-		seqIndex:   make(map[string]map[uint64]string),
-		scopeIndex: make(map[string]map[string]struct{}),
+		ops:         make(map[string]*frienv1.OperationEnvelope),
+		seqIndex:    make(map[string]map[uint64]string),
+		scopeIndex:  make(map[string]map[string]struct{}),
+		opScope:     make(map[string]string),
+		equivocated: make(map[string]struct{}),
 	}
 }
 
@@ -80,6 +84,16 @@ func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (A
 	if _, ok := s.ops[env.GetOpId()]; ok {
 		return AddResult{Duplicate: true}, nil
 	}
+	// A replay of an op_id already recorded at this (node_id, seq) -- even one
+	// since compacted out of ops -- is an idempotent no-op. seqIndex is kept
+	// forever precisely so this case is distinguishable from equivocation:
+	// without it, a compacted op replayed by a slow peer would look like a
+	// brand-new admission and grow the set right back (a resurrection bug).
+	if bySeq := s.seqIndex[env.GetNodeId()]; bySeq != nil {
+		if prevID, ok := bySeq[env.GetSeq()]; ok && prevID == env.GetOpId() {
+			return AddResult{Duplicate: true}, nil
+		}
+	}
 	if maxPerScope > 0 && len(s.scopeIndex[s.scopeOf(env)]) >= maxPerScope {
 		return AddResult{}, ErrScopeFull
 	}
@@ -88,7 +102,53 @@ func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (A
 	s.ops[env.GetOpId()] = env
 	s.recordSeq(env)
 	s.indexScope(env)
+	if proof != nil {
+		// OpA is nil when the original half of the fork was already compacted
+		// before this later conflicting op arrived; there is nothing left to
+		// protect on that side, but the new op itself is protected.
+		if proof.GetOpA() != nil {
+			s.equivocated[proof.GetOpA().GetOpId()] = struct{}{}
+		}
+		s.equivocated[env.GetOpId()] = struct{}{}
+	}
 	return AddResult{Added: true, Equivocation: proof}, nil
+}
+
+// CompactBelow removes the bulky envelope and scope-index entry for any op
+// whose (node_id, seq) is at or below cuts[node_id], freeing the memory a
+// long-lived or high-churn mesh would otherwise hold forever. An origin
+// absent from cuts is left entirely untouched -- no safe cut is known for it
+// yet, which is the conservative default.
+//
+// Two things are deliberately never removed:
+//   - seqIndex entries (node_id -> seq -> op_id), which stay forever as a tiny
+//     tombstone. Without them, a later op forging the same (node_id, seq)
+//     after its original was compacted would look like a first sighting
+//     instead of equivocation, silently losing the ability to detect it.
+//   - ops flagged in equivocated, so misbehavior evidence survives compaction
+//     for audit and revocation even once its seq is below the safe cut.
+//
+// The caller (internal/checkpoint) is responsible for only ever advancing
+// cuts to a value every currently-live peer has itself acknowledged holding;
+// CompactBelow performs no such check itself, trusting its input.
+func (s *OpSet) CompactBelow(cuts map[string]uint64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for id, env := range s.ops {
+		cut, ok := cuts[env.GetNodeId()]
+		if !ok || env.GetSeq() > cut {
+			continue
+		}
+		if _, protected := s.equivocated[id]; protected {
+			continue
+		}
+		delete(s.ops, id)
+		s.unindexScope(id)
+		removed++
+	}
+	return removed
 }
 
 // Merge unions other into s and returns any equivocation proofs surfaced during

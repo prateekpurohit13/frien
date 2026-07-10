@@ -324,3 +324,109 @@ func TestAddRejectsMalformed(t *testing.T) {
 		t.Error("missing node_id should error")
 	}
 }
+
+func TestCompactBelowRemovesOldOpsBoundedByCut(t *testing.T) {
+	s := NewOpSet()
+	for sq := uint64(1); sq <= 5; sq++ {
+		s.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+	removed := s.CompactBelow(map[string]uint64{"node.a": 3})
+	if removed != 3 {
+		t.Fatalf("should compact seqs 1-3, got %d removed", removed)
+	}
+	if s.Len() != 2 {
+		t.Fatalf("len = %d, want 2 (seqs 4,5 remain)", s.Len())
+	}
+	for _, sq := range []uint64{1, 2, 3} {
+		if s.Has(fmt.Sprintf("op%d", sq)) {
+			t.Fatalf("op at seq %d should have been compacted", sq)
+		}
+	}
+	for _, sq := range []uint64{4, 5} {
+		if !s.Has(fmt.Sprintf("op%d", sq)) {
+			t.Fatalf("op at seq %d should still be present", sq)
+		}
+	}
+}
+
+func TestCompactBelowLeavesUnknownOriginsUntouched(t *testing.T) {
+	s := NewOpSet()
+	s.Add(threatEnv(t, "a1", "node.a", 1, ""))
+	s.Add(threatEnv(t, "b1", "node.b", 1, ""))
+	// Only node.a has a known cut; node.b must be left alone entirely.
+	s.CompactBelow(map[string]uint64{"node.a": 100})
+	if s.Has("a1") {
+		t.Fatal("node.a's op should be compacted")
+	}
+	if !s.Has("b1") {
+		t.Fatal("node.b has no cut yet; its op must survive untouched")
+	}
+}
+
+func TestCompactBelowPreservesEquivocationEvidence(t *testing.T) {
+	s := NewOpSet()
+	s.Add(threatEnv(t, "opA", "node.a", 1, ""))
+	s.Add(threatEnv(t, "opB", "node.a", 1, "")) // fork at (node.a, 1)
+
+	s.CompactBelow(map[string]uint64{"node.a": 100})
+	if !s.Has("opA") || !s.Has("opB") {
+		t.Fatal("equivocation evidence must survive compaction even below the cut")
+	}
+}
+
+func TestCompactBelowRemovesScopeIndexEntry(t *testing.T) {
+	s := NewOpSet()
+	s.Add(threatEnv(t, "op1", "node.a", 1, ""))
+	if len(s.OpIDsInScope("fleet")) != 1 {
+		t.Fatal("op should be indexed under fleet before compaction")
+	}
+	s.CompactBelow(map[string]uint64{"node.a": 100})
+	if len(s.OpIDsInScope("fleet")) != 0 {
+		t.Fatal("scope index entry should be removed alongside the op")
+	}
+}
+
+func TestCompactedReplayDoesNotResurrect(t *testing.T) {
+	s := NewOpSet()
+	env := threatEnv(t, "op1", "node.a", 1, "")
+	s.Add(env)
+	s.CompactBelow(map[string]uint64{"node.a": 100})
+	if s.Has("op1") {
+		t.Fatal("precondition: op1 should be compacted")
+	}
+
+	// A slow peer's anti-entropy later re-delivers the exact same envelope.
+	res, err := s.Add(env)
+	if err != nil {
+		t.Fatalf("replay of a compacted op should not error: %v", err)
+	}
+	if !res.Duplicate || res.Added {
+		t.Fatalf("replay should be treated as an idempotent duplicate, got %+v", res)
+	}
+	if s.Has("op1") {
+		t.Fatal("a compacted op must not be resurrected by replay")
+	}
+}
+
+func TestCompactedSeqStillDetectsLateEquivocation(t *testing.T) {
+	s := NewOpSet()
+	s.Add(threatEnv(t, "original", "node.a", 1, ""))
+	s.CompactBelow(map[string]uint64{"node.a": 100})
+
+	// A different op_id at the same (node_id, seq) arrives after the original
+	// was compacted: this is still equivocation, and must still be flagged,
+	// even though the original envelope is no longer available as evidence.
+	res, err := s.Add(threatEnv(t, "forged", "node.a", 1, ""))
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if res.Equivocation == nil {
+		t.Fatal("a conflicting op at an already-compacted seq must still be detected as equivocation")
+	}
+	if res.Equivocation.GetOpA() != nil {
+		t.Fatal("OpA should be nil: its evidence was already compacted")
+	}
+	if !s.Has("forged") {
+		t.Fatal("the newly detected equivocating op should be admitted (and now protected from compaction)")
+	}
+}

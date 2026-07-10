@@ -43,7 +43,10 @@ func (s *OpSet) scopeOf(env *frienv1.OperationEnvelope) string {
 	return scope.Scope{Kind: scope.Fleet}.String()
 }
 
-// indexScope records env under its scope. It assumes the write lock is held.
+// indexScope records env under its scope, and remembers which scope it landed
+// in (opScope) so a later removal does not need to recompute scopeOf -- which
+// would give the wrong answer for a retraction once its target has itself
+// already been removed. It assumes the write lock is held.
 func (s *OpSet) indexScope(env *frienv1.OperationEnvelope) {
 	sc := s.scopeOf(env)
 	set := s.scopeIndex[sc]
@@ -52,6 +55,16 @@ func (s *OpSet) indexScope(env *frienv1.OperationEnvelope) {
 		s.scopeIndex[sc] = set
 	}
 	set[env.GetOpId()] = struct{}{}
+	s.opScope[env.GetOpId()] = sc
+}
+
+// unindexScope removes id from whatever scope it was recorded under. It
+// assumes the write lock is held.
+func (s *OpSet) unindexScope(id string) {
+	if sc, ok := s.opScope[id]; ok {
+		delete(s.scopeIndex[sc], id)
+		delete(s.opScope, id)
+	}
 }
 
 // Scopes lists the scope keys currently present in the set.
