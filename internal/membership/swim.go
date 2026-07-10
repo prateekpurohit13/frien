@@ -109,6 +109,14 @@ func (s *SWIM) Seed(nodeID string, addrs []string) {
 // and counts against local health: being seen as dead means our acks are slow.
 func (s *SWIM) Apply(u Update) {
 	res := s.list.Apply(u)
+	if res.AddrConflict {
+		s.log.Warn().
+			Str("node", u.NodeID).
+			Strs("prev_addrs", res.PrevAddresses).
+			Strs("new_addrs", u.Addresses).
+			Uint64("incarnation", u.Incarnation).
+			Msg("membership address conflict: known node now claims a different address")
+	}
 	switch {
 	case res.SelfRefute:
 		s.applyAwareness(1)

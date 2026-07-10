@@ -105,6 +105,39 @@ func TestApplySelfRefutation(t *testing.T) {
 	}
 }
 
+func TestApplyDetectsAddressConflict(t *testing.T) {
+	ml := NewMemberList("self", newFakeClock().Now)
+
+	// First sighting carries an address but is not a conflict.
+	if res := ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 1, Addresses: []string{"10.0.0.1:9000"}}); res.AddrConflict {
+		t.Fatal("first sighting must not be flagged as an address conflict")
+	}
+	// Same address at a higher incarnation is a normal re-announce.
+	if res := ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 2, Addresses: []string{"10.0.0.1:9000"}}); res.AddrConflict {
+		t.Fatal("unchanged address must not be flagged")
+	}
+	// A different address at a higher incarnation is accepted but flagged.
+	res := ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 3, Addresses: []string{"10.0.0.9:9000"}})
+	if !res.AddrConflict {
+		t.Fatal("a moved address at higher incarnation must be flagged")
+	}
+	if len(res.PrevAddresses) != 1 || res.PrevAddresses[0] != "10.0.0.1:9000" {
+		t.Fatalf("conflict should report the prior address, got %v", res.PrevAddresses)
+	}
+	if m, _ := ml.Get("a"); m.Addresses[0] != "10.0.0.9:9000" {
+		t.Fatalf("higher incarnation should still win the address, got %v", m.Addresses)
+	}
+}
+
+func TestSameAddrsIgnoresOrder(t *testing.T) {
+	if !sameAddrs([]string{"a:1", "b:2"}, []string{"b:2", "a:1"}) {
+		t.Fatal("reordered address sets should compare equal")
+	}
+	if sameAddrs([]string{"a:1"}, []string{"a:1", "b:2"}) {
+		t.Fatal("different-length address sets must not compare equal")
+	}
+}
+
 func TestExpireSuspects(t *testing.T) {
 	clk := newFakeClock()
 	ml := NewMemberList("self", clk.Now)

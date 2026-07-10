@@ -52,9 +52,11 @@ type Update struct {
 
 // ApplyResult reports what changed when an Update was merged.
 type ApplyResult struct {
-	Changed     bool   // local view moved to a new state/incarnation
-	SelfRefute  bool   // the update accused this node; caller must broadcast alive
-	Incarnation uint64 // the refuting incarnation, when SelfRefute is set
+	Changed       bool     // local view moved to a new state/incarnation
+	SelfRefute    bool     // the update accused this node; caller must broadcast alive
+	Incarnation   uint64   // the refuting incarnation, when SelfRefute is set
+	AddrConflict  bool     // an accepted alive claim moved a known node's address
+	PrevAddresses []string // the address the node advertised before the conflict
 }
 
 // MemberList is the node's authoritative roster. All mutation goes through Apply
@@ -118,10 +120,15 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 			cur.State = StateAlive
 			cur.Incarnation = u.Incarnation
 			cur.StateChange = m.now()
+			res := ApplyResult{Changed: true}
 			if len(u.Addresses) > 0 {
+				if len(cur.Addresses) > 0 && !sameAddrs(cur.Addresses, u.Addresses) {
+					res.AddrConflict = true
+					res.PrevAddresses = cur.Addresses
+				}
 				cur.Addresses = u.Addresses
 			}
-			return ApplyResult{Changed: true}
+			return res
 		}
 	case StateSuspect:
 		if u.Incarnation >= cur.Incarnation && cur.State == StateAlive {
@@ -181,6 +188,24 @@ func (m *MemberList) ActiveMembers() []Member {
 		}
 	}
 	return out
+}
+
+// sameAddrs compares two address sets regardless of order.
+func sameAddrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, x := range a {
+		seen[x]++
+	}
+	for _, x := range b {
+		if seen[x] == 0 {
+			return false
+		}
+		seen[x]--
+	}
+	return true
 }
 
 // Get returns the current view of one member.
