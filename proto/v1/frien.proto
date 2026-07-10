@@ -298,13 +298,15 @@ message GossipMessage {
 }
 
 message AntiEntropyRequest {
-  uint32          proto_version    = 1;
-  string          requester_id     = 2;
-  string          zone             = 3;
-  string          root_hash        = 4;
-  string          since_checkpoint = 5;
-  string          scope            = 6;  // scope key being reconciled ("fleet" | "zone:<name>")
-  repeated string have_op_ids      = 7;  // op_ids the requester already holds in this scope
+  uint32              proto_version    = 1;
+  string              requester_id     = 2;
+  string              zone             = 3;
+  string              root_hash        = 4;
+  string              since_checkpoint = 5;
+  string              scope            = 6;  // scope key being reconciled ("fleet" | "zone:<name>")
+  repeated string     have_op_ids      = 7;  // deprecated: superseded by have_seqs + have_above
+  map<string, uint64> have_seqs        = 8;  // per origin node: highest contiguous seq held
+  repeated string     have_above       = 9;  // op_ids held above the watermarks or as equivocation siblings
 }
 
 // SWIM probe messages. Membership updates piggyback on every probe and ack so

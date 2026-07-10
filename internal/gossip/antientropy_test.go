@@ -42,14 +42,16 @@ func TestOnAntiEntropyCapsResponse(t *testing.T) {
 	}
 }
 
-func TestOnAntiEntropyPagesToCompletion(t *testing.T) {
+func TestOnAntiEntropyRangePagesToCompletion(t *testing.T) {
 	const total, page = 10, 4
 	e := newAntiEntropyEngine(t, page, total)
+	requester := crdt.NewOpSet()
 
-	seen := make(map[string]int)
-	have := []string{}
 	for round := 0; round < total+2; round++ {
-		resp := e.OnAntiEntropy(&frienv1.AntiEntropyRequest{Scope: "fleet", Zone: "z", HaveOpIds: have})
+		haveSeqs, haveAbove := requester.ScopeState("fleet")
+		resp := e.OnAntiEntropy(&frienv1.AntiEntropyRequest{
+			Scope: "fleet", Zone: "z", HaveSeqs: haveSeqs, HaveAbove: haveAbove,
+		})
 		if len(resp.GetMissingOps()) == 0 {
 			break
 		}
@@ -57,17 +59,16 @@ func TestOnAntiEntropyPagesToCompletion(t *testing.T) {
 			t.Fatalf("round %d exceeded the page cap: %d", round, len(resp.GetMissingOps()))
 		}
 		for _, env := range resp.GetMissingOps() {
-			seen[env.GetOpId()]++
-			have = append(have, env.GetOpId())
+			if _, err := requester.Add(env); err != nil {
+				t.Fatalf("add: %v", err)
+			}
 		}
 	}
 
-	if len(seen) != total {
-		t.Fatalf("paging delivered %d distinct ops, want %d", len(seen), total)
+	if requester.Len() != total {
+		t.Fatalf("range sync converged to %d ops, want %d", requester.Len(), total)
 	}
-	for id, n := range seen {
-		if n != 1 {
-			t.Fatalf("op %s delivered %d times; paging should not duplicate", id, n)
-		}
+	if requester.CanonicalHash() != e.set.CanonicalHash() {
+		t.Fatal("requester and responder sets diverged after range sync")
 	}
 }

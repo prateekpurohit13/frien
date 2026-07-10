@@ -256,12 +256,14 @@ func (e *Engine) gossipRound(ctx context.Context) {
 			continue
 		}
 		for _, scopeKey := range e.cfg.SubscribedScopes {
+			haveSeqs, haveAbove := e.set.ScopeState(scopeKey)
 			req := &frienv1.AntiEntropyRequest{
 				ProtoVersion: e.cfg.ProtoVersion,
 				RequesterId:  e.cfg.NodeID,
 				Zone:         e.cfg.Zone,
 				Scope:        scopeKey,
-				HaveOpIds:    e.set.OpIDsInScope(scopeKey),
+				HaveSeqs:     haveSeqs,
+				HaveAbove:    haveAbove,
 			}
 			var resp frienv1.AntiEntropyResponse
 			if err := roundtrip(ctx, sess, kindAntiEntropy, req, &resp); err != nil {
@@ -348,23 +350,11 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 	if err != nil || !e.router.ShouldSend(sc, req.GetZone()) {
 		return &frienv1.AntiEntropyResponse{}
 	}
-	have := make(map[string]struct{}, len(req.GetHaveOpIds()))
-	for _, id := range req.GetHaveOpIds() {
-		have[id] = struct{}{}
+	above := make(map[string]struct{}, len(req.GetHaveAbove()))
+	for _, id := range req.GetHaveAbove() {
+		above[id] = struct{}{}
 	}
-	limit := e.cfg.MaxOpsPerMsg
-	var missing []*frienv1.OperationEnvelope
-	for _, id := range e.set.OpIDsInScope(req.GetScope()) {
-		if _, ok := have[id]; ok {
-			continue
-		}
-		if env, ok := e.set.Get(id); ok {
-			missing = append(missing, env)
-			if limit > 0 && len(missing) >= limit {
-				break
-			}
-		}
-	}
+	missing := e.set.MissingInRange(req.GetScope(), req.GetHaveSeqs(), above, e.cfg.MaxOpsPerMsg)
 	return &frienv1.AntiEntropyResponse{MissingOps: missing}
 }
 

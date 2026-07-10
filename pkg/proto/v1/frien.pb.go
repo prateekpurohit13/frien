@@ -2316,8 +2316,10 @@ type AntiEntropyRequest struct {
 	Zone            string                 `protobuf:"bytes,3,opt,name=zone,proto3" json:"zone,omitempty"`
 	RootHash        string                 `protobuf:"bytes,4,opt,name=root_hash,json=rootHash,proto3" json:"root_hash,omitempty"`
 	SinceCheckpoint string                 `protobuf:"bytes,5,opt,name=since_checkpoint,json=sinceCheckpoint,proto3" json:"since_checkpoint,omitempty"`
-	Scope           string                 `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`                            // scope key being reconciled ("fleet" | "zone:<name>")
-	HaveOpIds       []string               `protobuf:"bytes,7,rep,name=have_op_ids,json=haveOpIds,proto3" json:"have_op_ids,omitempty"` // op_ids the requester already holds in this scope
+	Scope           string                 `protobuf:"bytes,6,opt,name=scope,proto3" json:"scope,omitempty"`                                                                                                  // scope key being reconciled ("fleet" | "zone:<name>")
+	HaveOpIds       []string               `protobuf:"bytes,7,rep,name=have_op_ids,json=haveOpIds,proto3" json:"have_op_ids,omitempty"`                                                                       // deprecated: superseded by have_seqs + have_above
+	HaveSeqs        map[string]uint64      `protobuf:"bytes,8,rep,name=have_seqs,json=haveSeqs,proto3" json:"have_seqs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // per origin node: highest contiguous seq held
+	HaveAbove       []string               `protobuf:"bytes,9,rep,name=have_above,json=haveAbove,proto3" json:"have_above,omitempty"`                                                                         // op_ids held above the watermarks or as equivocation siblings
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -2397,6 +2399,20 @@ func (x *AntiEntropyRequest) GetScope() string {
 func (x *AntiEntropyRequest) GetHaveOpIds() []string {
 	if x != nil {
 		return x.HaveOpIds
+	}
+	return nil
+}
+
+func (x *AntiEntropyRequest) GetHaveSeqs() map[string]uint64 {
+	if x != nil {
+		return x.HaveSeqs
+	}
+	return nil
+}
+
+func (x *AntiEntropyRequest) GetHaveAbove() []string {
+	if x != nil {
+		return x.HaveAbove
 	}
 	return nil
 }
@@ -3113,7 +3129,7 @@ const file_frien_proto_rawDesc = "" +
 	"\x06deltas\x18\x04 \x03(\v2\x1b.frien.v1.OperationEnvelopeR\x06deltas\x12-\n" +
 	"\x12membership_updates\x18\x05 \x03(\tR\x11membershipUpdates\x12E\n" +
 	"\x10revocation_hints\x18\x06 \x03(\v2\x1a.frien.v1.RevocationRecordR\x0frevocationHints\x123\n" +
-	"\x16max_message_bytes_hint\x18\a \x01(\x04R\x13maxMessageBytesHint\"\xee\x01\n" +
+	"\x16max_message_bytes_hint\x18\a \x01(\x04R\x13maxMessageBytesHint\"\x93\x03\n" +
 	"\x12AntiEntropyRequest\x12#\n" +
 	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12!\n" +
 	"\frequester_id\x18\x02 \x01(\tR\vrequesterId\x12\x12\n" +
@@ -3121,7 +3137,13 @@ const file_frien_proto_rawDesc = "" +
 	"\troot_hash\x18\x04 \x01(\tR\brootHash\x12)\n" +
 	"\x10since_checkpoint\x18\x05 \x01(\tR\x0fsinceCheckpoint\x12\x14\n" +
 	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x1e\n" +
-	"\vhave_op_ids\x18\a \x03(\tR\thaveOpIds\"\x9d\x01\n" +
+	"\vhave_op_ids\x18\a \x03(\tR\thaveOpIds\x12G\n" +
+	"\thave_seqs\x18\b \x03(\v2*.frien.v1.AntiEntropyRequest.HaveSeqsEntryR\bhaveSeqs\x12\x1d\n" +
+	"\n" +
+	"have_above\x18\t \x03(\tR\thaveAbove\x1a;\n" +
+	"\rHaveSeqsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x9d\x01\n" +
 	"\n" +
 	"PeerUpdate\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
@@ -3191,7 +3213,7 @@ func file_frien_proto_rawDescGZIP() []byte {
 	return file_frien_proto_rawDescData
 }
 
-var file_frien_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
+var file_frien_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_frien_proto_goTypes = []any{
 	(*OperationEnvelope)(nil),           // 0: frien.v1.OperationEnvelope
 	(*ThreatRecord)(nil),                // 1: frien.v1.ThreatRecord
@@ -3231,6 +3253,7 @@ var file_frien_proto_goTypes = []any{
 	(*NegotiateRequest)(nil),            // 35: frien.v1.NegotiateRequest
 	(*NegotiateResponse)(nil),           // 36: frien.v1.NegotiateResponse
 	(*MisbehaviorProof)(nil),            // 37: frien.v1.MisbehaviorProof
+	nil,                                 // 38: frien.v1.AntiEntropyRequest.HaveSeqsEntry
 }
 var file_frien_proto_depIdxs = []int32{
 	4,  // 0: frien.v1.ListPeersResponse.peers:type_name -> frien.v1.PeerState
@@ -3238,43 +3261,44 @@ var file_frien_proto_depIdxs = []int32{
 	24, // 2: frien.v1.GetHardenReportResponse.checks:type_name -> frien.v1.HardenCheck
 	0,  // 3: frien.v1.GossipMessage.deltas:type_name -> frien.v1.OperationEnvelope
 	6,  // 4: frien.v1.GossipMessage.revocation_hints:type_name -> frien.v1.RevocationRecord
-	30, // 5: frien.v1.Ping.updates:type_name -> frien.v1.PeerUpdate
-	30, // 6: frien.v1.PingReq.updates:type_name -> frien.v1.PeerUpdate
-	30, // 7: frien.v1.Ack.updates:type_name -> frien.v1.PeerUpdate
-	0,  // 8: frien.v1.AntiEntropyResponse.missing_ops:type_name -> frien.v1.OperationEnvelope
-	0,  // 9: frien.v1.MisbehaviorProof.op_a:type_name -> frien.v1.OperationEnvelope
-	0,  // 10: frien.v1.MisbehaviorProof.op_b:type_name -> frien.v1.OperationEnvelope
-	7,  // 11: frien.v1.AdminService.GetStatus:input_type -> frien.v1.GetStatusRequest
-	9,  // 12: frien.v1.AdminService.ListPeers:input_type -> frien.v1.ListPeersRequest
-	11, // 13: frien.v1.AdminService.ReportThreat:input_type -> frien.v1.ReportThreatRequest
-	13, // 14: frien.v1.AdminService.ExplainDecision:input_type -> frien.v1.ExplainDecisionRequest
-	15, // 15: frien.v1.AdminService.SetEnforceMode:input_type -> frien.v1.SetEnforceModeRequest
-	17, // 16: frien.v1.AdminService.RollbackEnforcement:input_type -> frien.v1.RollbackEnforcementRequest
-	19, // 17: frien.v1.AdminService.ListEnforcements:input_type -> frien.v1.ListEnforcementsRequest
-	21, // 18: frien.v1.AdminService.Breakglass:input_type -> frien.v1.BreakglassRequest
-	23, // 19: frien.v1.AdminService.GetHardenReport:input_type -> frien.v1.GetHardenReportRequest
-	26, // 20: frien.v1.AdminService.TestPolicy:input_type -> frien.v1.TestPolicyRequest
-	28, // 21: frien.v1.PeerService.Gossip:input_type -> frien.v1.GossipMessage
-	29, // 22: frien.v1.PeerService.AntiEntropy:input_type -> frien.v1.AntiEntropyRequest
-	35, // 23: frien.v1.PeerService.Negotiate:input_type -> frien.v1.NegotiateRequest
-	8,  // 24: frien.v1.AdminService.GetStatus:output_type -> frien.v1.GetStatusResponse
-	10, // 25: frien.v1.AdminService.ListPeers:output_type -> frien.v1.ListPeersResponse
-	12, // 26: frien.v1.AdminService.ReportThreat:output_type -> frien.v1.ReportThreatResponse
-	14, // 27: frien.v1.AdminService.ExplainDecision:output_type -> frien.v1.ExplainDecisionResponse
-	16, // 28: frien.v1.AdminService.SetEnforceMode:output_type -> frien.v1.SetEnforceModeResponse
-	18, // 29: frien.v1.AdminService.RollbackEnforcement:output_type -> frien.v1.RollbackEnforcementResponse
-	20, // 30: frien.v1.AdminService.ListEnforcements:output_type -> frien.v1.ListEnforcementsResponse
-	22, // 31: frien.v1.AdminService.Breakglass:output_type -> frien.v1.BreakglassResponse
-	25, // 32: frien.v1.AdminService.GetHardenReport:output_type -> frien.v1.GetHardenReportResponse
-	27, // 33: frien.v1.AdminService.TestPolicy:output_type -> frien.v1.TestPolicyResponse
-	28, // 34: frien.v1.PeerService.Gossip:output_type -> frien.v1.GossipMessage
-	34, // 35: frien.v1.PeerService.AntiEntropy:output_type -> frien.v1.AntiEntropyResponse
-	36, // 36: frien.v1.PeerService.Negotiate:output_type -> frien.v1.NegotiateResponse
-	24, // [24:37] is the sub-list for method output_type
-	11, // [11:24] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	38, // 5: frien.v1.AntiEntropyRequest.have_seqs:type_name -> frien.v1.AntiEntropyRequest.HaveSeqsEntry
+	30, // 6: frien.v1.Ping.updates:type_name -> frien.v1.PeerUpdate
+	30, // 7: frien.v1.PingReq.updates:type_name -> frien.v1.PeerUpdate
+	30, // 8: frien.v1.Ack.updates:type_name -> frien.v1.PeerUpdate
+	0,  // 9: frien.v1.AntiEntropyResponse.missing_ops:type_name -> frien.v1.OperationEnvelope
+	0,  // 10: frien.v1.MisbehaviorProof.op_a:type_name -> frien.v1.OperationEnvelope
+	0,  // 11: frien.v1.MisbehaviorProof.op_b:type_name -> frien.v1.OperationEnvelope
+	7,  // 12: frien.v1.AdminService.GetStatus:input_type -> frien.v1.GetStatusRequest
+	9,  // 13: frien.v1.AdminService.ListPeers:input_type -> frien.v1.ListPeersRequest
+	11, // 14: frien.v1.AdminService.ReportThreat:input_type -> frien.v1.ReportThreatRequest
+	13, // 15: frien.v1.AdminService.ExplainDecision:input_type -> frien.v1.ExplainDecisionRequest
+	15, // 16: frien.v1.AdminService.SetEnforceMode:input_type -> frien.v1.SetEnforceModeRequest
+	17, // 17: frien.v1.AdminService.RollbackEnforcement:input_type -> frien.v1.RollbackEnforcementRequest
+	19, // 18: frien.v1.AdminService.ListEnforcements:input_type -> frien.v1.ListEnforcementsRequest
+	21, // 19: frien.v1.AdminService.Breakglass:input_type -> frien.v1.BreakglassRequest
+	23, // 20: frien.v1.AdminService.GetHardenReport:input_type -> frien.v1.GetHardenReportRequest
+	26, // 21: frien.v1.AdminService.TestPolicy:input_type -> frien.v1.TestPolicyRequest
+	28, // 22: frien.v1.PeerService.Gossip:input_type -> frien.v1.GossipMessage
+	29, // 23: frien.v1.PeerService.AntiEntropy:input_type -> frien.v1.AntiEntropyRequest
+	35, // 24: frien.v1.PeerService.Negotiate:input_type -> frien.v1.NegotiateRequest
+	8,  // 25: frien.v1.AdminService.GetStatus:output_type -> frien.v1.GetStatusResponse
+	10, // 26: frien.v1.AdminService.ListPeers:output_type -> frien.v1.ListPeersResponse
+	12, // 27: frien.v1.AdminService.ReportThreat:output_type -> frien.v1.ReportThreatResponse
+	14, // 28: frien.v1.AdminService.ExplainDecision:output_type -> frien.v1.ExplainDecisionResponse
+	16, // 29: frien.v1.AdminService.SetEnforceMode:output_type -> frien.v1.SetEnforceModeResponse
+	18, // 30: frien.v1.AdminService.RollbackEnforcement:output_type -> frien.v1.RollbackEnforcementResponse
+	20, // 31: frien.v1.AdminService.ListEnforcements:output_type -> frien.v1.ListEnforcementsResponse
+	22, // 32: frien.v1.AdminService.Breakglass:output_type -> frien.v1.BreakglassResponse
+	25, // 33: frien.v1.AdminService.GetHardenReport:output_type -> frien.v1.GetHardenReportResponse
+	27, // 34: frien.v1.AdminService.TestPolicy:output_type -> frien.v1.TestPolicyResponse
+	28, // 35: frien.v1.PeerService.Gossip:output_type -> frien.v1.GossipMessage
+	34, // 36: frien.v1.PeerService.AntiEntropy:output_type -> frien.v1.AntiEntropyResponse
+	36, // 37: frien.v1.PeerService.Negotiate:output_type -> frien.v1.NegotiateResponse
+	25, // [25:38] is the sub-list for method output_type
+	12, // [12:25] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_frien_proto_init() }
@@ -3288,7 +3312,7 @@ func file_frien_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_frien_proto_rawDesc), len(file_frien_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   38,
+			NumMessages:   39,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

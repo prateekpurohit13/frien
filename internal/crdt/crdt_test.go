@@ -185,6 +185,110 @@ func TestAddWithLimitConcurrentDoesNotOvershoot(t *testing.T) {
 	}
 }
 
+func aboveSet(ids []string) map[string]struct{} {
+	m := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		m[id] = struct{}{}
+	}
+	return m
+}
+
+func TestScopeStateComputesContiguousWatermark(t *testing.T) {
+	s := NewOpSet()
+	// node.a holds 1,2,3 contiguously then a gap to 5; node.b holds 1,2.
+	for _, sq := range []uint64{1, 2, 3, 5} {
+		s.Add(threatEnv(t, fmt.Sprintf("a%d", sq), "node.a", sq, ""))
+	}
+	for _, sq := range []uint64{1, 2} {
+		s.Add(threatEnv(t, fmt.Sprintf("b%d", sq), "node.b", sq, ""))
+	}
+
+	haveSeqs, haveAbove := s.ScopeState("fleet")
+	if haveSeqs["node.a"] != 3 {
+		t.Fatalf("node.a watermark = %d, want 3 (stops at the gap before 5)", haveSeqs["node.a"])
+	}
+	if haveSeqs["node.b"] != 2 {
+		t.Fatalf("node.b watermark = %d, want 2", haveSeqs["node.b"])
+	}
+	if len(haveAbove) != 1 || haveAbove[0] != "a5" {
+		t.Fatalf("have_above should be exactly the above-watermark op a5, got %v", haveAbove)
+	}
+}
+
+func TestMissingInRangeSkipsHeldAndFillsGap(t *testing.T) {
+	responder := NewOpSet()
+	for sq := uint64(1); sq <= 5; sq++ {
+		responder.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+	requester := NewOpSet()
+	for _, sq := range []uint64{1, 2, 4, 5} { // missing seq 3
+		requester.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+
+	haveSeqs, haveAbove := requester.ScopeState("fleet")
+	if haveSeqs["node.a"] != 2 {
+		t.Fatalf("watermark should stop at the gap: got %d, want 2", haveSeqs["node.a"])
+	}
+	missing := responder.MissingInRange("fleet", haveSeqs, aboveSet(haveAbove), 0)
+	if len(missing) != 1 || missing[0].GetSeq() != 3 {
+		t.Fatalf("only the gap op (seq 3) should be sent, got %d ops", len(missing))
+	}
+}
+
+func TestMissingInRangePropagatesEquivocationBelowWatermark(t *testing.T) {
+	responder := NewOpSet()
+	for sq := uint64(1); sq <= 3; sq++ {
+		responder.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+	// Equivocation: a second op at (node.a, 2).
+	responder.Add(threatEnv(t, "op2-fork", "node.a", 2, ""))
+
+	requester := NewOpSet()
+	for sq := uint64(1); sq <= 3; sq++ { // has only one op at seq 2
+		requester.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+
+	haveSeqs, haveAbove := requester.ScopeState("fleet")
+	if haveSeqs["node.a"] != 3 {
+		t.Fatalf("requester watermark = %d, want 3", haveSeqs["node.a"])
+	}
+	missing := responder.MissingInRange("fleet", haveSeqs, aboveSet(haveAbove), 0)
+	// The forked op sits below the watermark but must still be sent as evidence.
+	// Its already-held sibling may ride along as an idempotent duplicate.
+	found := false
+	for _, env := range missing {
+		if env.GetOpId() == "op2-fork" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("equivocation sibling below the watermark must be sent, got %d ops", len(missing))
+	}
+}
+
+func TestRangeSyncConvergesUnderEquivocation(t *testing.T) {
+	responder := NewOpSet()
+	for sq := uint64(1); sq <= 4; sq++ {
+		responder.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
+	}
+	responder.Add(threatEnv(t, "op2-fork", "node.a", 2, ""))
+	requester := NewOpSet()
+
+	for round := 0; round < 10; round++ {
+		haveSeqs, haveAbove := requester.ScopeState("fleet")
+		missing := responder.MissingInRange("fleet", haveSeqs, aboveSet(haveAbove), 2)
+		if len(missing) == 0 {
+			break
+		}
+		for _, env := range missing {
+			requester.Add(env)
+		}
+	}
+	if requester.CanonicalHash() != responder.CanonicalHash() {
+		t.Fatalf("range sync with equivocation diverged: req=%d resp=%d ops", requester.Len(), responder.Len())
+	}
+}
+
 func TestAddRejectsMalformed(t *testing.T) {
 	s := NewOpSet()
 	if _, err := s.Add(nil); err == nil {
