@@ -147,6 +147,7 @@ message RevocationRecord {
   string signed_by        = 6;  // must be "operator"
   string operator_key_id  = 7;
   bytes  signature        = 8;
+  string status           = 9;  // "tainted" | "revoked" -- two-phase: tainted blocks new quorum contribution, revoked additionally hard-rejects at transport
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

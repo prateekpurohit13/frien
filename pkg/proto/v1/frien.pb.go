@@ -827,6 +827,7 @@ type RevocationRecord struct {
 	SignedBy        string                 `protobuf:"bytes,6,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`    // must be "operator"
 	OperatorKeyId   string                 `protobuf:"bytes,7,opt,name=operator_key_id,json=operatorKeyId,proto3" json:"operator_key_id,omitempty"`
 	Signature       []byte                 `protobuf:"bytes,8,opt,name=signature,proto3" json:"signature,omitempty"`
+	Status          string                 `protobuf:"bytes,9,opt,name=status,proto3" json:"status,omitempty"` // "tainted" | "revoked" -- two-phase: tainted blocks new quorum contribution, revoked additionally hard-rejects at transport
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -915,6 +916,13 @@ func (x *RevocationRecord) GetSignature() []byte {
 		return x.Signature
 	}
 	return nil
+}
+
+func (x *RevocationRecord) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
 }
 
 type GetStatusRequest struct {
@@ -3022,7 +3030,7 @@ const file_frien_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1b\n" +
 	"\tsigned_by\x18\b \x01(\tR\bsignedBy\x12\x1c\n" +
-	"\tsignature\x18\t \x01(\fR\tsignature\"\x80\x02\n" +
+	"\tsignature\x18\t \x01(\fR\tsignature\"\x98\x02\n" +
 	"\x10RevocationRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12)\n" +
 	"\x10cert_fingerprint\x18\x02 \x01(\tR\x0fcertFingerprint\x12\x17\n" +
@@ -3032,7 +3040,8 @@ const file_frien_proto_rawDesc = "" +
 	"revoked_at\x18\x05 \x01(\tR\trevokedAt\x12\x1b\n" +
 	"\tsigned_by\x18\x06 \x01(\tR\bsignedBy\x12&\n" +
 	"\x0foperator_key_id\x18\a \x01(\tR\roperatorKeyId\x12\x1c\n" +
-	"\tsignature\x18\b \x01(\fR\tsignature\"\x12\n" +
+	"\tsignature\x18\b \x01(\fR\tsignature\x12\x16\n" +
+	"\x06status\x18\t \x01(\tR\x06status\"\x12\n" +
 	"\x10GetStatusRequest\"\x8c\x02\n" +
 	"\x11GetStatusResponse\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x16\n" +
