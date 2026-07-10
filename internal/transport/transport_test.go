@@ -17,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/prateekpurohit13/frien/internal/identity"
+	"github.com/prateekpurohit13/frien/internal/revocation"
 	frienv1 "github.com/prateekpurohit13/frien/pkg/proto/v1"
 )
 
@@ -211,6 +212,38 @@ func TestRevokedPeerRejected(t *testing.T) {
 	_, _, err := dialAndAccept(t, server, client)
 	if err == nil {
 		t.Fatal("expected handshake failure for revoked peer, got nil")
+	}
+}
+
+func TestRevocationSetSatisfiesRevocationChecker(t *testing.T) {
+	ca := newTestCA(t)
+	log := zerolog.Nop()
+
+	serverID := ca.nodeIdentity(t, "node.a")
+	clientID := ca.nodeIdentity(t, "node.b")
+
+	revocations := revocation.NewSet()
+	server, _ := New(serverID, ca.pool, testConfig(KEMHybridPQC), revocations, log)
+	client, _ := New(clientID, ca.pool, testConfig(KEMHybridPQC), nil, log)
+
+	// Before any revocation, the handshake succeeds normally.
+	srv, cli, err := dialAndAccept(t, server, client)
+	if err != nil {
+		t.Fatalf("handshake should succeed before revocation: %v", err)
+	}
+	srv.Close()
+	cli.Close()
+
+	rec := &frienv1.RevocationRecord{
+		Id: "r1", CertFingerprint: clientID.Fingerprint, NodeId: "node.b",
+		SignedBy: "operator", Status: revocation.StatusRevoked,
+	}
+	if _, err := revocations.Apply(rec); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if _, _, err := dialAndAccept(t, server, client); err == nil {
+		t.Fatal("handshake should fail once the client's fingerprint is a real revocation.Set entry")
 	}
 }
 

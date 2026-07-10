@@ -35,7 +35,7 @@ func newIngestEngine(t *testing.T, ca *testCA, nodeID string) *Engine {
 		t.Fatalf("transport: %v", err)
 	}
 	cfg := Config{NodeID: nodeID}
-	return New(cfg, id, crdt.NewClock(nodeID, crdt.WithMaxDrift(10*time.Second)), crdt.NewOpSet(), scope.NewRouter("z"), tr, zerolog.Nop())
+	return New(cfg, id, crdt.NewClock(nodeID, crdt.WithMaxDrift(10*time.Second)), crdt.NewOpSet(), scope.NewRouter("z"), tr, nil, zerolog.Nop())
 }
 
 func TestIngestHoldsBackUnknownSigner(t *testing.T) {

@@ -130,7 +130,7 @@ func newNode(t *testing.T, ca *testCA, nodeID, zone, addr string, seeds []string
 		SuspectMultiplier: 3,
 		IndirectProbes:    2,
 	}
-	eng := New(cfg, id, crdt.NewClock(nodeID, crdt.WithMaxDrift(10*time.Second)), set, scope.NewRouter(zone), tr, zerolog.Nop())
+	eng := New(cfg, id, crdt.NewClock(nodeID, crdt.WithMaxDrift(10*time.Second)), set, scope.NewRouter(zone), tr, nil, zerolog.Nop())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := eng.Start(ctx); err != nil {

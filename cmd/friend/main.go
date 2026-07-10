@@ -31,6 +31,7 @@ import (
 	"github.com/prateekpurohit13/frien/internal/logger"
 	"github.com/prateekpurohit13/frien/internal/membership"
 	"github.com/prateekpurohit13/frien/internal/oplog"
+	"github.com/prateekpurohit13/frien/internal/revocation"
 	"github.com/prateekpurohit13/frien/internal/scope"
 	"github.com/prateekpurohit13/frien/internal/storage"
 	"github.com/prateekpurohit13/frien/internal/transport"
@@ -212,6 +213,11 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		return nil, nil, err
 	}
 
+	// Shared with gossip.New below: a revocation ingested via gossip must also
+	// block new mTLS handshakes at the transport layer, so both need the same
+	// Set rather than each holding an independent copy.
+	revocations := revocation.NewSet()
+
 	skew := parseDuration(cfg.Transport.ClockSkewWindow, 10*time.Second)
 	tr, err := transport.New(id, caPool, transport.Config{
 		BindAddr:        net.JoinHostPort(cfg.Transport.PeerBind, strconv.Itoa(cfg.Transport.PeerPort)),
@@ -219,7 +225,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		DialTimeout:     parseDuration(cfg.Transport.DialTimeout, 5*time.Second),
 		IdleTimeout:     parseDuration(cfg.Transport.SessionIdleTimeout, 30*time.Second),
 		KEM:             kemMode(cfg.Identity.PQCKem),
-	}, nil, log)
+	}, revocations, log)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -258,7 +264,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		SuspectMultiplier: cfg.Membership.SuspectMultiplier,
 		IndirectProbes:    cfg.Membership.MaxGossipNodes,
 		OperatorPublicKey: operatorKey,
-	}, id, clock, set, scope.NewRouter(cfg.Node.Zone), tr, log)
+	}, id, clock, set, scope.NewRouter(cfg.Node.Zone), tr, revocations, log)
 
 	if err := eng.Start(ctx); err != nil {
 		return nil, nil, err

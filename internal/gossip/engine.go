@@ -20,6 +20,7 @@ import (
 	"github.com/prateekpurohit13/frien/internal/crdt"
 	"github.com/prateekpurohit13/frien/internal/identity"
 	"github.com/prateekpurohit13/frien/internal/membership"
+	"github.com/prateekpurohit13/frien/internal/revocation"
 	"github.com/prateekpurohit13/frien/internal/scope"
 	"github.com/prateekpurohit13/frien/internal/transport"
 	"github.com/prateekpurohit13/frien/internal/verify"
@@ -101,6 +102,7 @@ type Engine struct {
 	keys           *verify.KeyStore
 	verifier       *verify.Verifier
 	peerWatermarks *checkpoint.PeerWatermarks
+	revocations    *revocation.Set
 
 	seq atomic.Uint64
 
@@ -114,11 +116,17 @@ type Engine struct {
 // New assembles a gossip engine bound to id's signing key: outgoing ops are
 // signed with it, and incoming ops are verified against the sender's key,
 // learned opportunistically from established mTLS sessions (see internal/verify).
-func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, router *scope.Router, tr *transport.Transport, log zerolog.Logger) *Engine {
+// revocations is shared with the transport layer's RevocationChecker by the
+// caller (constructed before both transport.New and gossip.New), so a
+// revocation ingested here also blocks new mTLS handshakes for that identity.
+func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, router *scope.Router, tr *transport.Transport, revocations *revocation.Set, log zerolog.Logger) *Engine {
 	cfg.withDefaults()
 	keys := verify.NewKeyStore()
 	if len(cfg.OperatorPublicKey) > 0 {
 		keys.SetOperatorKey(cfg.OperatorPublicKey)
+	}
+	if revocations == nil {
+		revocations = revocation.NewSet()
 	}
 	e := &Engine{
 		cfg:            cfg,
@@ -130,6 +138,7 @@ func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, 
 		keys:           keys,
 		verifier:       verify.NewVerifier(keys),
 		peerWatermarks: checkpoint.NewPeerWatermarks(),
+		revocations:    revocations,
 		watermark:      make(map[string]crdt.Timestamp),
 	}
 	e.mgr = NewManager(tr, e, keys, log)
@@ -443,16 +452,23 @@ func randIntn(n int) int {
 // or out-of-window skew is rejected before the op can enter the set, and the
 // per-scope cap is enforced atomically inside the set so concurrent ingests
 // cannot race past it.
-func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
+// Ingest admits an externally-provided envelope (e.g. an operator-signed
+// revocation injected by an admin tool) through the same verification and
+// admission path a peer-received op goes through during anti-entropy.
+func (e *Engine) Ingest(env *frienv1.OperationEnvelope) error {
+	return e.ingest(env)
+}
+
+func (e *Engine) ingest(env *frienv1.OperationEnvelope) error {
 	if !e.router.Accept(crdt.EnvelopeScope(env)) {
-		return
+		return fmt.Errorf("gossip: scope not accepted")
 	}
 	ts, err := crdt.ParseTimestamp(env.GetHlc())
 	if err != nil {
-		return
+		return fmt.Errorf("gossip: bad hlc: %w", err)
 	}
 	if err := e.clock.CheckSkew(ts, e.cfg.SkewWindow); err != nil {
-		return
+		return err
 	}
 	if err := e.verifier.Verify(env); err != nil {
 		if errors.Is(err, verify.ErrUnknownSigner) {
@@ -460,17 +476,20 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 		} else {
 			e.log.Warn().Err(err).Str("node", env.GetNodeId()).Str("op", env.GetOpId()).Msg("op rejected: signature verification failed")
 		}
-		return
+		return err
 	}
 	if _, err := e.clock.Update(ts); err != nil {
-		return
+		return err
 	}
 	res, err := e.set.AddWithLimit(env, e.cfg.MaxOpsPerScope)
 	if err != nil {
 		if errors.Is(err, crdt.ErrScopeFull) {
 			e.log.Warn().Str("scope", crdt.EnvelopeScope(env).String()).Str("op", env.GetOpId()).Msg("op rejected: scope at capacity")
 		}
-		return
+		return err
+	}
+	if env.GetOpType() == crdt.OpRevocation {
+		e.applyRevocation(env)
 	}
 	e.recordWatermark(env.GetNodeId(), ts)
 	if res.Equivocation != nil {
@@ -480,6 +499,45 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) {
 			Uint64("seq", env.GetSeq()).
 			Str("proof_id", res.Equivocation.GetId()).
 			Msg("equivocation detected")
+	}
+	return nil
+}
+
+// applyRevocation unmarshals and applies a revocation op's payload. By the
+// time this runs, the envelope's own signature has already been verified by
+// e.verifier -- routed to the pinned operator key, since these envelopes
+// always carry signed_by "operator" -- so Apply can trust its input.
+func (e *Engine) applyRevocation(env *frienv1.OperationEnvelope) {
+	// The envelope's own signed_by is the cryptographically meaningful check:
+	// e.verifier.Verify already routed to the pinned operator key because of
+	// it. The payload's own signed_by field (inside RevocationRecord) is just
+	// bytes the envelope's signer chose to include -- a node could sign a
+	// perfectly valid envelope of its own (signed_by "node") while claiming
+	// signed_by "operator" inside the payload, and that claim would carry no
+	// authority at all. Checking the record's field here would trust exactly
+	// that unearned claim, so this must gate on the envelope's field instead.
+	if env.GetSignedBy() != "operator" {
+		e.log.Warn().Str("op", env.GetOpId()).Str("node", env.GetNodeId()).Msg("revocation: envelope not signed_by operator; ignoring")
+		return
+	}
+	var rec frienv1.RevocationRecord
+	if err := proto.Unmarshal(env.GetPayload(), &rec); err != nil {
+		e.log.Warn().Err(err).Str("op", env.GetOpId()).Msg("revocation: malformed payload")
+		return
+	}
+	res, err := e.revocations.Apply(&rec)
+	if err != nil {
+		e.log.Warn().Err(err).Str("op", env.GetOpId()).Msg("revocation: rejected")
+		return
+	}
+	if res.NewlyTainted {
+		e.log.Warn().Str("node", res.NodeID).Str("fingerprint", rec.GetCertFingerprint()).Msg("peer tainted")
+	}
+	if res.NewlyRevoked {
+		e.log.Warn().Str("node", res.NodeID).Msg("peer revoked; dropping any open session")
+		if res.NodeID != "" {
+			e.mgr.drop(res.NodeID)
+		}
 	}
 }
 
