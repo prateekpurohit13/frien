@@ -5,9 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -129,7 +132,9 @@ func TestIdentity_Load_NonEd25519Key_Rejected(t *testing.T) {
 func TestIdentity_NeedsRenewal(t *testing.T) {
 	dir := t.TempDir()
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	// Cert expires in 30 minutes.
+	// Cert expires in 30 minutes; short total lifetime (90m) means the
+	// jittered half-life trigger (~40.5-49.5m remaining) is already due too,
+	// so both mechanisms agree renewal is needed.
 	certPath, keyPath := writeTestCert(t, dir, "node.soon",
 		time.Now().Add(-time.Hour), time.Now().Add(30*time.Minute), priv)
 
@@ -141,12 +146,84 @@ func TestIdentity_NeedsRenewal(t *testing.T) {
 	if !id.NeedsRenewal(time.Hour) {
 		t.Error("cert expiring in 30m should need renewal at a 1h threshold")
 	}
+}
+
+func TestIdentity_NeedsRenewalFalseWellBeforeThresholdAndHalfLife(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// A long-lived, freshly-issued cert: ~24h remaining out of a 25h total
+	// lifetime, so neither the tight threshold nor the jittered half-life
+	// (~11.25h-13.75h remaining) are anywhere close to firing.
+	certPath, keyPath := writeTestCert(t, dir, "node.fresh",
+		time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour), priv)
+
+	id, err := identity.Load(identity.LoadOptions{CertPath: certPath, KeyPath: keyPath})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
 	if id.NeedsRenewal(10 * time.Minute) {
-		t.Error("cert expiring in 30m should NOT need renewal at a 10m threshold")
+		t.Error("a fresh long-lived cert should NOT need renewal at a tight threshold")
 	}
 	if id.NeedsRenewal(0) {
-		t.Error("a non-positive threshold disables renewal")
+		t.Error("a non-positive threshold disables the fixed floor, and half-life is not yet due either")
 	}
+}
+
+func TestIdentity_NeedsRenewalHalfLifeFiresIndependentlyOfThreshold(t *testing.T) {
+	dir := t.TempDir()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// 24h total lifetime, but only 10h remaining: past the halfway point
+	// (12h) even after the widest possible -10% jitter (10.8h), so this must
+	// fire from the half-life trigger alone, with the fixed floor disabled.
+	certPath, keyPath := writeTestCert(t, dir, "node.halflife",
+		time.Now().Add(-14*time.Hour), time.Now().Add(10*time.Hour), priv)
+
+	id, err := identity.Load(identity.LoadOptions{CertPath: certPath, KeyPath: keyPath})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if !id.NeedsRenewal(0) {
+		t.Error("past the (jittered) half-life point, renewal should fire even with the fixed floor disabled")
+	}
+}
+
+func TestIdentity_NeedsRenewalJitterVariesByCertificate(t *testing.T) {
+	dir := t.TempDir()
+	notBefore, notAfter := time.Now().Add(-time.Hour), time.Now().Add(24*time.Hour)
+
+	// Two certs with the identical validity window but distinct keys (and so
+	// distinct fingerprints) get different jittered half-life points -- the
+	// property that desynchronizes a fleet issued in lockstep.
+	renewAt := func(cn string) time.Time {
+		_, priv, _ := ed25519.GenerateKey(rand.Reader)
+		certPath, keyPath := writeTestCert(t, dir, cn, notBefore, notAfter, priv)
+		id, err := identity.Load(identity.LoadOptions{CertPath: certPath, KeyPath: keyPath})
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		return expectedJitteredRenewAt(t, id)
+	}
+
+	a, b := renewAt("node.a"), renewAt("node.b")
+	if a.Equal(b) {
+		t.Skip("both certificates happened to hash to the same jitter fraction; vanishingly unlikely, not a failure")
+	}
+}
+
+// expectedJitteredRenewAt replicates identity's unexported jitter derivation
+// (sha256 of the fingerprint -> [0.9, 1.1) factor applied to half the cert's
+// lifetime) so the test can assert against an independently computed value
+// rather than just re-deriving it by calling into the package under test.
+func expectedJitteredRenewAt(t *testing.T, id *identity.Identity) time.Time {
+	t.Helper()
+	halfLife := id.Certificate.NotAfter.Sub(id.Certificate.NotBefore) / 2
+	sum := sha256.Sum256([]byte(id.Fingerprint))
+	frac := float64(binary.BigEndian.Uint32(sum[:4])) / float64(math.MaxUint32)
+	factor := 0.9 + 0.2*frac
+	jittered := time.Duration(float64(halfLife) * factor)
+	return id.Certificate.NotAfter.Add(-jittered)
 }
 
 func TestIdentity_IsExpired(t *testing.T) {

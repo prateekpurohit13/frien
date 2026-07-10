@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"os"
 	"time"
 )
@@ -99,14 +101,48 @@ func (i *Identity) Signer() *Ed25519Signer { return i.signer }
 // NotAfter is the certificate expiry time.
 func (i *Identity) NotAfter() time.Time { return i.Certificate.NotAfter }
 
-// NeedsRenewal reports whether the certificate expires within threshold from now
-// (or is already expired). The renewal loop uses this to refresh short-lived certs
-// before they lapse. A non-positive threshold disables renewal checks.
+// NeedsRenewal reports whether the certificate should be renewed now. It
+// fires on whichever condition is met first:
+//
+//   - the configured threshold: a fixed safety-margin floor the certificate
+//     must never be renewed later than (disabled by a non-positive threshold);
+//   - roughly half the certificate's total lifetime remaining, jittered by a
+//     small per-certificate offset (see jitterHalfLife) so a fleet of
+//     certificates issued in lockstep with the same lifetime does not also
+//     renew in lockstep against the CA. This trigger is always active
+//     regardless of threshold.
 func (i *Identity) NeedsRenewal(threshold time.Duration) bool {
-	if threshold <= 0 {
-		return false
+	now := time.Now()
+	if threshold > 0 && !now.Before(i.Certificate.NotAfter.Add(-threshold)) {
+		return true
 	}
-	return time.Until(i.Certificate.NotAfter) <= threshold
+	return !now.Before(i.jitteredHalfLifeRenewAt())
+}
+
+// jitterHalfLifeSpread bounds the jitter applied to the half-life renewal
+// trigger to +/-10% of the half-life duration.
+const jitterHalfLifeSpread = 0.1
+
+func (i *Identity) jitteredHalfLifeRenewAt() time.Time {
+	lifetime := i.Certificate.NotAfter.Sub(i.Certificate.NotBefore)
+	if lifetime <= 0 {
+		return i.Certificate.NotAfter
+	}
+	return i.Certificate.NotAfter.Add(-jitterHalfLife(lifetime/2, i.Fingerprint))
+}
+
+// jitterHalfLife scales halfLife by a factor in [1-jitterHalfLifeSpread,
+// 1+jitterHalfLifeSpread), derived deterministically from a hash of
+// fingerprint. Deriving the jitter from the certificate itself, rather than a
+// fresh random draw, makes NeedsRenewal repeatable for a given certificate
+// (no test flakiness, no re-triggering on every call with a new random value)
+// while still varying across different certificates -- exactly the property
+// needed to desynchronize a fleet whose certificates were all issued at once.
+func jitterHalfLife(halfLife time.Duration, fingerprint string) time.Duration {
+	sum := sha256.Sum256([]byte(fingerprint))
+	frac := float64(binary.BigEndian.Uint32(sum[:4])) / float64(math.MaxUint32) // [0, 1)
+	factor := (1 - jitterHalfLifeSpread) + 2*jitterHalfLifeSpread*frac         // [0.9, 1.1)
+	return time.Duration(float64(halfLife) * factor)
 }
 
 // IsExpired reports whether the certificate is outside its validity window now.
