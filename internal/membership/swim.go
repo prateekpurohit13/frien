@@ -37,6 +37,10 @@ func (c Config) suspicionTimeout() time.Duration {
 	return time.Duration(mult) * c.ProbeInterval
 }
 
+// maxAwareness bounds the local-health penalty; the probe interval and suspicion
+// timeout scale by (awareness+1), so a degraded node backs off up to this factor.
+const maxAwareness = 8
+
 // SWIM is the failure detector and membership disseminator for one node.
 type SWIM struct {
 	localID    string
@@ -49,6 +53,9 @@ type SWIM struct {
 
 	rngMu sync.Mutex
 	rng   *rand.Rand
+
+	awMu      sync.Mutex
+	awareness int // local-health penalty in [0, maxAwareness-1]; 0 == healthy
 
 	queueMu sync.Mutex
 	queue   []*broadcast
@@ -98,15 +105,46 @@ func (s *SWIM) Seed(nodeID string, addrs []string) {
 }
 
 // Apply merges an incoming membership update and disseminates it onward. An
-// accusation against this node is refuted with a higher-incarnation alive claim.
+// accusation against this node is refuted with a higher-incarnation alive claim
+// and counts against local health: being seen as dead means our acks are slow.
 func (s *SWIM) Apply(u Update) {
 	res := s.list.Apply(u)
 	switch {
 	case res.SelfRefute:
+		s.applyAwareness(1)
 		s.enqueue(Update{NodeID: s.localID, Addresses: s.localAddrs, State: StateAlive, Incarnation: res.Incarnation})
 	case res.Changed:
 		s.enqueue(u)
 	}
+}
+
+// applyAwareness moves the local-health penalty by delta, clamped to range.
+func (s *SWIM) applyAwareness(delta int) {
+	s.awMu.Lock()
+	s.awareness += delta
+	switch {
+	case s.awareness < 0:
+		s.awareness = 0
+	case s.awareness > maxAwareness-1:
+		s.awareness = maxAwareness - 1
+	}
+	s.awMu.Unlock()
+}
+
+// Awareness reports the current local-health penalty (0 == healthy).
+func (s *SWIM) Awareness() int {
+	s.awMu.Lock()
+	defer s.awMu.Unlock()
+	return s.awareness
+}
+
+// scaled stretches a base duration by the local-health penalty so a struggling
+// node probes less aggressively and holds suspicions longer before declaring death.
+func (s *SWIM) scaled(base time.Duration) time.Duration {
+	s.awMu.Lock()
+	mult := s.awareness + 1
+	s.awMu.Unlock()
+	return base * time.Duration(mult)
 }
 
 // ProbeOnce runs one SWIM protocol period: probe one peer directly, fall back to
@@ -116,7 +154,12 @@ func (s *SWIM) ProbeOnce(ctx context.Context) {
 	if !ok {
 		return
 	}
-	if s.directProbe(ctx, target) || s.indirectProbe(ctx, target) {
+	if s.directProbe(ctx, target) {
+		s.applyAwareness(-1)
+		s.Apply(Update{NodeID: target.NodeID, Addresses: target.Addresses, State: StateAlive, Incarnation: target.Incarnation})
+		return
+	}
+	if s.indirectProbe(ctx, target) {
 		s.Apply(Update{NodeID: target.NodeID, Addresses: target.Addresses, State: StateAlive, Incarnation: target.Incarnation})
 		return
 	}
@@ -126,20 +169,19 @@ func (s *SWIM) ProbeOnce(ctx context.Context) {
 // Tick promotes timed-out suspects to dead and disseminates the result. It is
 // run once per protocol period by Run, and called directly in tests.
 func (s *SWIM) Tick() {
-	for _, u := range s.list.ExpireSuspects(s.cfg.suspicionTimeout()) {
+	for _, u := range s.list.ExpireSuspects(s.scaled(s.cfg.suspicionTimeout())) {
 		s.enqueue(u)
 	}
 }
 
-// Run drives the protocol on a ticker until the context is cancelled.
+// Run drives the protocol until the context is cancelled. The period adapts to
+// local health so a degraded node paces itself down rather than probing blindly.
 func (s *SWIM) Run(ctx context.Context) {
-	t := time.NewTicker(s.cfg.ProbeInterval)
-	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(s.scaled(s.cfg.ProbeInterval)):
 			s.ProbeOnce(ctx)
 			s.Tick()
 		}

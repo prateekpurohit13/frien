@@ -201,6 +201,62 @@ func TestIndirectProbeRunsRelaysConcurrently(t *testing.T) {
 	}
 }
 
+func TestAwarenessRisesOnSelfRefuteAndDecays(t *testing.T) {
+	w := &world{up: map[string]bool{"peer": true}}
+	s := New("self", fakeProber{w}, Config{
+		ProbeInterval:  100 * time.Millisecond,
+		ProbeTimeout:   10 * time.Millisecond,
+		IndirectProbes: 1,
+	}, zerolog.Nop(), WithRand(rand.New(rand.NewSource(1))))
+
+	if s.Awareness() != 0 {
+		t.Fatalf("fresh node should be healthy, got awareness %d", s.Awareness())
+	}
+	s.Apply(Update{NodeID: "self", State: StateSuspect, Incarnation: 1})
+	if s.Awareness() != 1 {
+		t.Fatalf("self-refutation should raise awareness, got %d", s.Awareness())
+	}
+
+	s.Seed("peer", []string{"peer:1"})
+	s.ProbeOnce(context.Background())
+	if s.Awareness() != 0 {
+		t.Fatalf("a healthy direct probe should decay awareness, got %d", s.Awareness())
+	}
+}
+
+func TestAwarenessExtendsSuspicionTimeout(t *testing.T) {
+	clk := newFakeClock()
+	s := New("self", fakeProber{&world{up: map[string]bool{}}}, Config{
+		ProbeInterval:     100 * time.Millisecond,
+		ProbeTimeout:      10 * time.Millisecond,
+		SuspectMultiplier: 4, // base suspicion timeout = 400ms
+		IndirectProbes:    1,
+	}, zerolog.Nop(), WithClock(clk.Now), WithRand(rand.New(rand.NewSource(1))))
+
+	for i := 1; i <= 3; i++ {
+		s.Apply(Update{NodeID: "self", State: StateSuspect, Incarnation: uint64(i * 10)})
+	}
+	if s.Awareness() != 3 {
+		t.Fatalf("awareness = %d, want 3", s.Awareness())
+	}
+
+	s.Apply(Update{NodeID: "b", State: StateAlive})
+	s.Apply(Update{NodeID: "b", State: StateSuspect})
+
+	// Scaled timeout is 400ms * (3+1) = 1600ms; a healthy node would have
+	// declared b dead by 500ms, but a degraded one must still hold it suspect.
+	clk.Advance(500 * time.Millisecond)
+	s.Tick()
+	if m, _ := s.List().Get("b"); m.State != StateSuspect {
+		t.Fatalf("degraded node must hold suspect past the base timeout, got %s", m.State)
+	}
+	clk.Advance(1200 * time.Millisecond)
+	s.Tick()
+	if m, _ := s.List().Get("b"); m.State != StateDead {
+		t.Fatalf("suspect should expire once the scaled timeout passes, got %s", m.State)
+	}
+}
+
 func TestThreeNodeDiscoveryAndFailure(t *testing.T) {
 	clk := newFakeClock()
 	w := &world{up: map[string]bool{"a": true, "b": true, "c": true}}
