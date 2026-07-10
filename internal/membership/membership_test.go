@@ -145,11 +145,12 @@ func TestExpireSuspects(t *testing.T) {
 	ml.Apply(Update{NodeID: "a", State: StateAlive})
 	ml.Apply(Update{NodeID: "a", State: StateSuspect})
 
-	if got := ml.ExpireSuspects(time.Second); len(got) != 0 {
+	fixed := func(int) time.Duration { return time.Second }
+	if got := ml.ExpireSuspects(fixed); len(got) != 0 {
 		t.Fatalf("nothing should expire before the timeout, got %v", got)
 	}
 	clk.Advance(time.Second)
-	if got := ml.ExpireSuspects(time.Second); len(got) != 1 || got[0].State != StateDead {
+	if got := ml.ExpireSuspects(fixed); len(got) != 1 || got[0].State != StateDead {
 		t.Fatalf("suspect should expire to dead, got %v", got)
 	}
 }
@@ -347,6 +348,58 @@ func TestUpdatesRetireAtRetransmitLimit(t *testing.T) {
 	s.queueMu.Unlock()
 	if present {
 		t.Fatalf("update should retire after %d retransmits", limit)
+	}
+}
+
+func TestSuspicionTimeoutInterpolatesWithConfirmers(t *testing.T) {
+	cfg := Config{ProbeInterval: 100 * time.Millisecond, SuspectMultiplier: 10, ConfirmationTarget: 3}
+
+	if got := cfg.suspicionTimeout(0); got != time.Second {
+		t.Fatalf("no confirmer should wait the full max, got %v", got)
+	}
+	if got := cfg.suspicionTimeout(1); got != time.Second {
+		t.Fatalf("one confirmer should wait the full max, got %v", got)
+	}
+	if got := cfg.suspicionTimeout(4); got != 100*time.Millisecond {
+		t.Fatalf("reaching the target should collapse to the min, got %v", got)
+	}
+	t2, t3 := cfg.suspicionTimeout(2), cfg.suspicionTimeout(3)
+	if !(t2 > t3 && t3 > 100*time.Millisecond && t2 < time.Second) {
+		t.Fatalf("more confirmers must monotonically shorten the timeout: 2->%v 3->%v", t2, t3)
+	}
+}
+
+func TestMemberListCountsDistinctConfirmers(t *testing.T) {
+	clk := newFakeClock()
+	ml := NewMemberList("self", clk.Now)
+	ml.Apply(Update{NodeID: "x", State: StateAlive})
+	ml.Apply(Update{NodeID: "x", State: StateSuspect, From: "a"})
+	ml.Apply(Update{NodeID: "x", State: StateSuspect, From: "b"})
+	ml.Apply(Update{NodeID: "x", State: StateSuspect, From: "b"}) // duplicate asserter, ignored
+
+	if m, _ := ml.Get("x"); m.ConfirmerCount() != 2 {
+		t.Fatalf("distinct confirmers = %d, want 2", m.ConfirmerCount())
+	}
+
+	timeoutFor := func(confirmers int) time.Duration {
+		if confirmers >= 2 {
+			return 100 * time.Millisecond
+		}
+		return time.Hour
+	}
+	if got := ml.ExpireSuspects(timeoutFor); len(got) != 0 {
+		t.Fatal("should not expire before its deadline")
+	}
+	clk.Advance(100 * time.Millisecond)
+	if got := ml.ExpireSuspects(timeoutFor); len(got) != 1 || got[0].State != StateDead {
+		t.Fatalf("a two-confirmer suspect should expire at its shortened deadline, got %v", got)
+	}
+
+	// A refuting alive claim clears the confirmer set.
+	ml.Apply(Update{NodeID: "x", State: StateAlive, Incarnation: 5})
+	ml.Apply(Update{NodeID: "x", State: StateSuspect, Incarnation: 5, From: "a"})
+	if m, _ := ml.Get("x"); m.ConfirmerCount() != 1 {
+		t.Fatalf("confirmers should reset after refutation, got %d", m.ConfirmerCount())
 	}
 }
 

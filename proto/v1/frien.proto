@@ -310,10 +310,11 @@ message AntiEntropyRequest {
 // SWIM probe messages. Membership updates piggyback on every probe and ack so
 // the failure detector and the roster disseminate over the same round-trips.
 message PeerUpdate {
-  string          node_id     = 1;
-  repeated string addresses   = 2;
-  uint32          state       = 3;  // 0=alive 1=suspect 2=dead 3=left
-  uint64          incarnation = 4;
+  string          node_id      = 1;
+  repeated string addresses    = 2;
+  uint32          state        = 3;  // 0=alive 1=suspect 2=dead 3=left
+  uint64          incarnation  = 4;
+  string          from_node_id = 5;  // node asserting this state; distinct asserters accelerate suspicion
 }
 
 message Ping {

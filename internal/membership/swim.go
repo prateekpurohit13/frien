@@ -23,20 +23,58 @@ type Prober interface {
 // Config tunes the failure detector. Values map directly onto the daemon's
 // membership config block.
 type Config struct {
-	ProbeInterval     time.Duration
-	ProbeTimeout      time.Duration
-	SuspectMultiplier int // suspicion timeout = SuspectMultiplier * ProbeInterval
-	IndirectProbes    int // relays asked to indirectly probe a non-responding peer
-	RetransmitMult    int // dissemination retransmits scale with this * log10(N)
-	QueueDepth        int // hard cap on pending broadcasts; 0 => default
+	ProbeInterval      time.Duration
+	ProbeTimeout       time.Duration
+	SuspectMultiplier  int // max suspicion timeout = SuspectMultiplier * ProbeInterval
+	IndirectProbes     int // relays asked to indirectly probe a non-responding peer
+	RetransmitMult     int // dissemination retransmits scale with this * log10(N)
+	QueueDepth         int // hard cap on pending broadcasts; 0 => default
+	ConfirmationTarget int // distinct confirmers that collapse suspicion to its minimum; 0 => default
 }
 
-func (c Config) suspicionTimeout() time.Duration {
+// suspicionMax is the timeout for a suspicion asserted by a single node.
+func (c Config) suspicionMax() time.Duration {
 	mult := c.SuspectMultiplier
 	if mult <= 0 {
 		mult = 4
 	}
 	return time.Duration(mult) * c.ProbeInterval
+}
+
+// suspicionMin is the floor a fully-confirmed suspicion collapses to: one probe
+// interval, so a widely-agreed failure is declared dead promptly.
+func (c Config) suspicionMin() time.Duration {
+	if c.ProbeInterval <= 0 {
+		return c.suspicionMax()
+	}
+	if c.ProbeInterval > c.suspicionMax() {
+		return c.suspicionMax()
+	}
+	return c.ProbeInterval
+}
+
+func (c Config) confirmationTarget() int {
+	if c.ConfirmationTarget <= 0 {
+		return 3
+	}
+	return c.ConfirmationTarget
+}
+
+// suspicionTimeout interpolates the deadline for a suspect from its distinct
+// confirmer count: one confirmer waits the full max, and reaching the
+// confirmation target collapses it to the min, on a log curve in between.
+func (c Config) suspicionTimeout(confirmers int) time.Duration {
+	max, min := c.suspicionMax(), c.suspicionMin()
+	n := confirmers - 1
+	if n <= 0 {
+		return max
+	}
+	k := c.confirmationTarget()
+	frac := math.Log(float64(n)+1) / math.Log(float64(k)+1)
+	if frac > 1 {
+		frac = 1
+	}
+	return max - time.Duration(frac*float64(max-min))
 }
 
 func (c Config) queueDepth() int {
@@ -181,13 +219,16 @@ func (s *SWIM) ProbeOnce(ctx context.Context) {
 		s.Apply(Update{NodeID: target.NodeID, Addresses: target.Addresses, State: StateAlive, Incarnation: target.Incarnation})
 		return
 	}
-	s.Apply(Update{NodeID: target.NodeID, State: StateSuspect, Incarnation: target.Incarnation})
+	s.Apply(Update{NodeID: target.NodeID, State: StateSuspect, Incarnation: target.Incarnation, From: s.localID})
 }
 
 // Tick promotes timed-out suspects to dead and disseminates the result. It is
 // run once per protocol period by Run, and called directly in tests.
 func (s *SWIM) Tick() {
-	for _, u := range s.list.ExpireSuspects(s.scaled(s.cfg.suspicionTimeout())) {
+	timeoutFor := func(confirmers int) time.Duration {
+		return s.scaled(s.cfg.suspicionTimeout(confirmers))
+	}
+	for _, u := range s.list.ExpireSuspects(timeoutFor) {
 		s.enqueue(u)
 	}
 }

@@ -14,6 +14,7 @@ func drainUpdates(swim *membership.SWIM, max int) []*frienv1.PeerUpdate {
 			Addresses:   u.Addresses,
 			State:       uint32(u.State),
 			Incarnation: u.Incarnation,
+			FromNodeId:  u.From,
 		})
 	}
 	return out
@@ -26,6 +27,7 @@ func applyUpdates(swim *membership.SWIM, ups []*frienv1.PeerUpdate) {
 			Addresses:   pu.GetAddresses(),
 			State:       membership.State(pu.GetState()),
 			Incarnation: pu.GetIncarnation(),
+			From:        pu.GetFromNodeId(),
 		})
 	}
 }

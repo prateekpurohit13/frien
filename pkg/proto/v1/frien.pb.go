@@ -2409,6 +2409,7 @@ type PeerUpdate struct {
 	Addresses     []string               `protobuf:"bytes,2,rep,name=addresses,proto3" json:"addresses,omitempty"`
 	State         uint32                 `protobuf:"varint,3,opt,name=state,proto3" json:"state,omitempty"` // 0=alive 1=suspect 2=dead 3=left
 	Incarnation   uint64                 `protobuf:"varint,4,opt,name=incarnation,proto3" json:"incarnation,omitempty"`
+	FromNodeId    string                 `protobuf:"bytes,5,opt,name=from_node_id,json=fromNodeId,proto3" json:"from_node_id,omitempty"` // node asserting this state; distinct asserters accelerate suspicion
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2469,6 +2470,13 @@ func (x *PeerUpdate) GetIncarnation() uint64 {
 		return x.Incarnation
 	}
 	return 0
+}
+
+func (x *PeerUpdate) GetFromNodeId() string {
+	if x != nil {
+		return x.FromNodeId
+	}
+	return ""
 }
 
 type Ping struct {
@@ -3113,13 +3121,15 @@ const file_frien_proto_rawDesc = "" +
 	"\troot_hash\x18\x04 \x01(\tR\brootHash\x12)\n" +
 	"\x10since_checkpoint\x18\x05 \x01(\tR\x0fsinceCheckpoint\x12\x14\n" +
 	"\x05scope\x18\x06 \x01(\tR\x05scope\x12\x1e\n" +
-	"\vhave_op_ids\x18\a \x03(\tR\thaveOpIds\"{\n" +
+	"\vhave_op_ids\x18\a \x03(\tR\thaveOpIds\"\x9d\x01\n" +
 	"\n" +
 	"PeerUpdate\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
 	"\taddresses\x18\x02 \x03(\tR\taddresses\x12\x14\n" +
 	"\x05state\x18\x03 \x01(\rR\x05state\x12 \n" +
-	"\vincarnation\x18\x04 \x01(\x04R\vincarnation\"\x81\x01\n" +
+	"\vincarnation\x18\x04 \x01(\x04R\vincarnation\x12 \n" +
+	"\ffrom_node_id\x18\x05 \x01(\tR\n" +
+	"fromNodeId\"\x81\x01\n" +
 	"\x04Ping\x12#\n" +
 	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12$\n" +
 	"\x0esender_node_id\x18\x02 \x01(\tR\fsenderNodeId\x12.\n" +

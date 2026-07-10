@@ -37,7 +37,12 @@ type Member struct {
 	State       State
 	Incarnation uint64
 	StateChange time.Time
+	confirmers  map[string]struct{} // distinct nodes asserting the current suspicion
 }
+
+// ConfirmerCount reports how many distinct nodes have asserted this member's
+// suspicion; more independent confirmations expire it faster.
+func (m Member) ConfirmerCount() int { return len(m.confirmers) }
 
 // Update is a membership claim about one node, exchanged via gossip. Conflicts
 // between competing claims are resolved by (state, incarnation) per the SWIM
@@ -48,6 +53,7 @@ type Update struct {
 	Addresses   []string
 	State       State
 	Incarnation uint64
+	From        string // node asserting this state; drives confirmation-accelerated suspicion
 }
 
 // ApplyResult reports what changed when an Update was merged.
@@ -104,13 +110,17 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 
 	cur, ok := m.members[u.NodeID]
 	if !ok {
-		m.members[u.NodeID] = &Member{
+		mem := &Member{
 			NodeID:      u.NodeID,
 			Addresses:   u.Addresses,
 			State:       u.State,
 			Incarnation: u.Incarnation,
 			StateChange: m.now(),
 		}
+		if u.State == StateSuspect {
+			mem.confirmers = confirmerSet(u.From)
+		}
+		m.members[u.NodeID] = mem
 		return ApplyResult{Changed: true}
 	}
 
@@ -120,6 +130,7 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 			cur.State = StateAlive
 			cur.Incarnation = u.Incarnation
 			cur.StateChange = m.now()
+			cur.confirmers = nil
 			res := ApplyResult{Changed: true}
 			if len(u.Addresses) > 0 {
 				if len(cur.Addresses) > 0 && !sameAddrs(cur.Addresses, u.Addresses) {
@@ -135,7 +146,17 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 			cur.State = StateSuspect
 			cur.Incarnation = u.Incarnation
 			cur.StateChange = m.now()
+			cur.confirmers = confirmerSet(u.From)
 			return ApplyResult{Changed: true}
+		}
+		// Already suspect: a distinct new asserter accelerates expiry but is not
+		// itself a roster change, so it is not re-disseminated.
+		if cur.State == StateSuspect && u.Incarnation >= cur.Incarnation && u.From != "" {
+			if cur.confirmers == nil {
+				cur.confirmers = confirmerSet(u.From)
+			} else {
+				cur.confirmers[u.From] = struct{}{}
+			}
 		}
 	case StateDead, StateLeft:
 		if u.Incarnation >= cur.Incarnation && cur.State != StateDead && cur.State != StateLeft {
@@ -148,21 +169,35 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 	return ApplyResult{}
 }
 
-// ExpireSuspects promotes any suspect older than timeout to dead and returns the
-// updates for the newly-dead members so the caller can disseminate them.
-func (m *MemberList) ExpireSuspects(timeout time.Duration) []Update {
+// ExpireSuspects promotes any suspect past its timeout to dead and returns the
+// updates for the newly-dead members. timeoutFor maps a suspect's distinct
+// confirmer count to its deadline, so a more widely-confirmed suspicion expires
+// sooner while a lone accusation waits the full window.
+func (m *MemberList) ExpireSuspects(timeoutFor func(confirmers int) time.Duration) []Update {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	var dead []Update
 	for _, mem := range m.members {
-		if mem.State == StateSuspect && m.now().Sub(mem.StateChange) >= timeout {
+		if mem.State != StateSuspect {
+			continue
+		}
+		if m.now().Sub(mem.StateChange) >= timeoutFor(len(mem.confirmers)) {
 			mem.State = StateDead
 			mem.StateChange = m.now()
+			mem.confirmers = nil
 			dead = append(dead, Update{NodeID: mem.NodeID, State: StateDead, Incarnation: mem.Incarnation})
 		}
 	}
 	return dead
+}
+
+func confirmerSet(from string) map[string]struct{} {
+	s := make(map[string]struct{}, 1)
+	if from != "" {
+		s[from] = struct{}{}
+	}
+	return s
 }
 
 // Members returns a copy of the full roster.
