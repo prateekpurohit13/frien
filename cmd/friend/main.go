@@ -141,7 +141,7 @@ func run(configPath string) error {
 	// ── 5b. Bring up the peer mesh (transport + membership + CRDT state) ───────
 	meshCtx, meshCancel := context.WithCancel(context.Background())
 	defer meshCancel()
-	mesh, clock, err := buildMesh(meshCtx, cfg, id, store, log)
+	mesh, clock, compactor, err := buildMesh(meshCtx, cfg, id, store, log)
 	if err != nil {
 		return fmt.Errorf("starting mesh: %w", err)
 	}
@@ -159,6 +159,8 @@ func run(configPath string) error {
 	statusSrc := newStatusSource(cfg, id, store, mesh, startTime)
 	admin := admingrpc.NewAdminService(statusSrc, cfg.AdminAPI.ReadOnly, log)
 	admin.SetPeerSource(peerAdapter{mesh})
+	admin.SetOperatorOpInjector(mesh)
+	admin.SetCompactionTrigger(compactor)
 	adminSrv, err := admingrpc.NewServer(admingrpc.Options{
 		SocketPath:   cfg.AdminAPI.Socket,
 		SocketMode:   0o660,
@@ -207,10 +209,10 @@ func run(configPath string) error {
 // Logical Clock (seeded from persisted state so it never regresses), the CRDT op
 // set, the scope router, and the gossip engine. It returns the running engine and
 // the clock (for periodic persistence).
-func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, store *storage.Store, log zerolog.Logger) (*gossip.Engine, *crdt.Clock, error) {
+func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, store *storage.Store, log zerolog.Logger) (*gossip.Engine, *crdt.Clock, *checkpoint.Compactor, error) {
 	caPool, err := identity.LoadCACertPool(cfg.Identity.CACertPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// Shared with gossip.New below: a revocation ingested via gossip must also
@@ -227,7 +229,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		KEM:             kemMode(cfg.Identity.PQCKem),
 	}, revocations, log)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	clockOpts := []crdt.ClockOption{crdt.WithMaxDrift(skew)}
@@ -247,7 +249,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	if cfg.Identity.OperatorRootCert != "" {
 		operatorKey, err = identity.LoadOperatorPublicKey(cfg.Identity.OperatorRootCert)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 	}
 
@@ -267,7 +269,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	}, id, clock, set, scope.NewRouter(cfg.Node.Zone), tr, revocations, log)
 
 	if err := eng.Start(ctx); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	log.Info().Str("peer_bind", cfg.Transport.PeerBind).Int("peer_port", cfg.Transport.PeerPort).Msg("peer mesh started")
 
@@ -285,7 +287,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	eng.SetCheckpointSource(compactor)
 	go runCompactor(ctx, compactor, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
 
-	return eng, clock, nil
+	return eng, clock, compactor, nil
 }
 
 // peerAdapter exposes the gossip engine's roster to the admin ListPeers RPC.

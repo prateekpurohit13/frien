@@ -19,6 +19,17 @@ service AdminService {
   rpc Breakglass(BreakglassRequest) returns (BreakglassResponse);
   rpc GetHardenReport(GetHardenReportRequest) returns (GetHardenReportResponse);
   rpc TestPolicy(TestPolicyRequest) returns (TestPolicyResponse);
+  // InjectOperatorOp submits a fully-formed, already-signed OperationEnvelope
+  // (built offline by an operator tool holding the operator private key --
+  // that key never touches a running node, see docs/security.md) into this
+  // node's local state via the same path a peer-received op takes. Used
+  // day-to-day to mint a revocation: the node only ever verifies against the
+  // pinned operator public key, never signs as operator itself.
+  rpc InjectOperatorOp(InjectOperatorOpRequest) returns (InjectOperatorOpResponse);
+  // TriggerCompaction runs one compaction pass immediately instead of waiting
+  // for the configured interval, for a named scope ("fleet" | "zone:<name>")
+  // or every subscribed scope when scope is empty.
+  rpc TriggerCompaction(TriggerCompactionRequest) returns (TriggerCompactionResponse);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +294,22 @@ message TestPolicyResponse {
   string          matched_policy         = 3;
   double          required_weight        = 4;
   repeated string protected_reasons      = 5;
+}
+
+message InjectOperatorOpRequest {
+  OperationEnvelope envelope = 1;  // pre-signed by the operator key; the node only verifies
+}
+
+message InjectOperatorOpResponse {
+  string op_id = 1;
+}
+
+message TriggerCompactionRequest {
+  string scope = 1;  // "fleet" | "zone:<name>"; empty = every subscribed scope
+}
+
+message TriggerCompactionResponse {
+  repeated string compacted_scopes = 1;  // scopes that actually removed something
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

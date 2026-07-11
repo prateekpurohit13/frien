@@ -54,6 +54,21 @@ type PeerSource interface {
 	Peers() []PeerInfo
 }
 
+// OperatorOpInjector admits an externally-supplied, already-signed envelope
+// into local state through the same verification/admission path a
+// peer-received op takes. gossip.Engine.Ingest satisfies this.
+type OperatorOpInjector interface {
+	Ingest(env *frienv1.OperationEnvelope) error
+}
+
+// CompactionTrigger runs one compaction pass on demand, for scopeKey (empty
+// = every subscribed scope), and reports which scopes actually compacted
+// something. internal/checkpoint's Compactor, adapted by cmd/friend, satisfies
+// this.
+type CompactionTrigger interface {
+	TriggerCompaction(scopeKey string) []string
+}
+
 // AdminService implements the local admin gRPC API (proto/v1 AdminService).
 //
 // Phase 1 implements GetStatus, which needs only config, identity, and storage —
@@ -64,14 +79,17 @@ type PeerSource interface {
 // Unimplemented.
 type AdminService struct {
 	frienv1.UnimplementedAdminServiceServer
-	src      StatusSource
-	peers    PeerSource
-	readOnly bool
-	log      zerolog.Logger
+	src       StatusSource
+	peers     PeerSource
+	injector  OperatorOpInjector
+	compactor CompactionTrigger
+	readOnly  bool
+	log       zerolog.Logger
 }
 
 // NewAdminService constructs the admin service. readOnly mirrors admin_api.read_only
-// and is enforced server-side (not only in the UI) once mutating RPCs exist.
+// and is enforced server-side (not only in the UI): InjectOperatorOp and
+// TriggerCompaction are the first mutating RPCs and check it before doing anything.
 func NewAdminService(src StatusSource, readOnly bool, log zerolog.Logger) *AdminService {
 	return &AdminService{src: src, readOnly: readOnly, log: log}
 }
@@ -79,6 +97,12 @@ func NewAdminService(src StatusSource, readOnly bool, log zerolog.Logger) *Admin
 // SetPeerSource wires the membership roster into ListPeers once the mesh engine
 // is running.
 func (s *AdminService) SetPeerSource(p PeerSource) { s.peers = p }
+
+// SetOperatorOpInjector wires InjectOperatorOp once the mesh engine is running.
+func (s *AdminService) SetOperatorOpInjector(i OperatorOpInjector) { s.injector = i }
+
+// SetCompactionTrigger wires TriggerCompaction once the compactor is running.
+func (s *AdminService) SetCompactionTrigger(c CompactionTrigger) { s.compactor = c }
 
 // GetStatus returns current node health and state. Available to any authenticated
 // caller (RBAC enforcement arrives with the Auth interceptor in a later phase).
@@ -166,4 +190,51 @@ func (s *AdminService) GetHardenReport(context.Context, *frienv1.GetHardenReport
 
 func (s *AdminService) TestPolicy(context.Context, *frienv1.TestPolicyRequest) (*frienv1.TestPolicyResponse, error) {
 	return nil, notYet("TestPolicy", "Phase 5 (policy)")
+}
+
+// InjectOperatorOp admits an operator-signed envelope (built offline; see the
+// proto doc comment). It never signs anything itself -- the node holds no
+// operator key -- it only routes the already-signed bytes through the same
+// verify-then-admit path anti-entropy uses, so an envelope that doesn't
+// actually verify against the pinned operator key is rejected exactly as it
+// would be if a peer had gossiped it.
+func (s *AdminService) InjectOperatorOp(_ context.Context, req *frienv1.InjectOperatorOpRequest) (*frienv1.InjectOperatorOpResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.injector == nil {
+		return nil, notYet("InjectOperatorOp", "Phase 4 follow-up (mesh wiring)")
+	}
+	env := req.GetEnvelope()
+	if env.GetOpId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "envelope missing op_id")
+	}
+	if err := s.injector.Ingest(env); err != nil {
+		s.log.Warn().Err(err).Str("op", env.GetOpId()).Msg("admin: InjectOperatorOp rejected")
+		return nil, status.Errorf(codes.InvalidArgument, "envelope rejected: %v", err)
+	}
+	s.log.Info().Str("op", env.GetOpId()).Str("op_type", env.GetOpType()).Msg("admin: operator op injected")
+	return &frienv1.InjectOperatorOpResponse{OpId: env.GetOpId()}, nil
+}
+
+// TriggerCompaction runs one compaction pass immediately rather than waiting
+// for the configured interval -- useful before a maintenance window, or to
+// inspect the resulting checkpoint on demand.
+func (s *AdminService) TriggerCompaction(_ context.Context, req *frienv1.TriggerCompactionRequest) (*frienv1.TriggerCompactionResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.compactor == nil {
+		return nil, notYet("TriggerCompaction", "Phase 4 follow-up (mesh wiring)")
+	}
+	compacted := s.compactor.TriggerCompaction(req.GetScope())
+	return &frienv1.TriggerCompactionResponse{CompactedScopes: compacted}, nil
+}
+
+// rejectIfReadOnly guards every mutating RPC against admin_api.read_only.
+func (s *AdminService) rejectIfReadOnly() error {
+	if s.readOnly {
+		return status.Error(codes.FailedPrecondition, "admin API is read-only (admin_api.read_only)")
+	}
+	return nil
 }

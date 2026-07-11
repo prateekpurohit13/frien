@@ -183,6 +183,195 @@ func TestListPeers_UnimplementedWithoutSource(t *testing.T) {
 	}
 }
 
+type fakeInjector struct {
+	lastEnv *frienv1.OperationEnvelope
+	err     error
+}
+
+func (f *fakeInjector) Ingest(env *frienv1.OperationEnvelope) error {
+	f.lastEnv = env
+	return f.err
+}
+
+type fakeCompactor struct {
+	lastScope string
+	compacted []string
+}
+
+func (f *fakeCompactor) TriggerCompaction(scopeKey string) []string {
+	f.lastScope = scopeKey
+	return f.compacted
+}
+
+func TestInjectOperatorOp_RoutesToInjector(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	injector := &fakeInjector{}
+	admin.SetOperatorOpInjector(injector)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	env := &frienv1.OperationEnvelope{OpId: "op_revoke_1", OpType: "revocation"}
+	resp, err := frienv1.NewAdminServiceClient(conn).InjectOperatorOp(
+		context.Background(), &frienv1.InjectOperatorOpRequest{Envelope: env})
+	if err != nil {
+		t.Fatalf("InjectOperatorOp: %v", err)
+	}
+	if resp.GetOpId() != "op_revoke_1" {
+		t.Fatalf("op_id = %q, want op_revoke_1", resp.GetOpId())
+	}
+	if injector.lastEnv.GetOpId() != "op_revoke_1" {
+		t.Fatal("the envelope should have been forwarded to the injector unchanged")
+	}
+}
+
+func TestInjectOperatorOp_RejectsInvalidEnvelope(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	admin.SetOperatorOpInjector(&fakeInjector{err: status.Error(codes.InvalidArgument, "bad signature")})
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).InjectOperatorOp(
+		context.Background(), &frienv1.InjectOperatorOpRequest{Envelope: &frienv1.OperationEnvelope{OpId: "op1"}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument when the injector rejects, got %v", status.Code(err))
+	}
+}
+
+func TestInjectOperatorOp_MissingOpID(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	admin.SetOperatorOpInjector(&fakeInjector{})
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).InjectOperatorOp(
+		context.Background(), &frienv1.InjectOperatorOpRequest{Envelope: &frienv1.OperationEnvelope{}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for a missing op_id, got %v", status.Code(err))
+	}
+}
+
+func TestInjectOperatorOp_ReadOnly(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, true, zerolog.Nop()) // read-only
+	injector := &fakeInjector{}
+	admin.SetOperatorOpInjector(injector)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).InjectOperatorOp(
+		context.Background(), &frienv1.InjectOperatorOpRequest{Envelope: &frienv1.OperationEnvelope{OpId: "op1"}})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on a read-only admin API, got %v", status.Code(err))
+	}
+	if injector.lastEnv != nil {
+		t.Fatal("the injector must never be called when the admin API is read-only")
+	}
+}
+
+func TestTriggerCompaction_Routes(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	compactor := &fakeCompactor{compacted: []string{"zone:eu"}}
+	admin.SetCompactionTrigger(compactor)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	resp, err := frienv1.NewAdminServiceClient(conn).TriggerCompaction(
+		context.Background(), &frienv1.TriggerCompactionRequest{Scope: "zone:eu"})
+	if err != nil {
+		t.Fatalf("TriggerCompaction: %v", err)
+	}
+	if compactor.lastScope != "zone:eu" {
+		t.Fatalf("scope forwarded = %q, want zone:eu", compactor.lastScope)
+	}
+	if len(resp.GetCompactedScopes()) != 1 || resp.GetCompactedScopes()[0] != "zone:eu" {
+		t.Fatalf("compacted_scopes = %v, want [zone:eu]", resp.GetCompactedScopes())
+	}
+}
+
+func TestTriggerCompaction_ReadOnlyRejects(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, true, zerolog.Nop())
+	compactor := &fakeCompactor{}
+	admin.SetCompactionTrigger(compactor)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).TriggerCompaction(context.Background(), &frienv1.TriggerCompactionRequest{})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on a read-only admin API, got %v", status.Code(err))
+	}
+}
+
 func TestNewServer_NoListenerConfigured(t *testing.T) {
 	src := StatusFunc(func() StatusInfo { return StatusInfo{} })
 	admin := NewAdminService(src, false, zerolog.Nop())

@@ -96,27 +96,44 @@ func (c *Compactor) Run(ctx context.Context, interval time.Duration) {
 // Each scope is independent: one scope having no safe floor yet (or nothing
 // to compact) does not block the others.
 func (c *Compactor) RunOnce() {
-	for _, scopeKey := range c.scopes() {
-		c.compactScope(scopeKey)
+	c.TriggerCompaction("")
+}
+
+// TriggerCompaction runs one compaction pass immediately for scopeKey, or
+// every currently configured scope when scopeKey is empty, and returns which
+// of the attempted scopes actually removed something. It satisfies
+// internal/grpc's CompactionTrigger, backing the admin API's on-demand
+// TriggerCompaction RPC as well as the periodic Run loop (via RunOnce).
+func (c *Compactor) TriggerCompaction(scopeKey string) []string {
+	scopes := c.scopes()
+	if scopeKey != "" {
+		scopes = []string{scopeKey}
 	}
+	var compacted []string
+	for _, sc := range scopes {
+		if c.compactScope(sc) {
+			compacted = append(compacted, sc)
+		}
+	}
+	return compacted
 }
 
 // compactScope computes the current safe floor for scopeKey and compacts the
 // local set once, publishing a signed checkpoint if anything was removed. It
 // is a no-op whenever SafeFloor is not yet safe to use (not every live peer
 // that replicates scopeKey has been confirmed) or nothing crosses the
-// resulting cut.
-func (c *Compactor) compactScope(scopeKey string) {
+// resulting cut. It reports whether anything was actually removed.
+func (c *Compactor) compactScope(scopeKey string) bool {
 	peers := c.livePeers(scopeKey)
 	selfHave, _ := c.set.ScopeState(scopeKey)
 	floor := c.watermarks.SafeFloor(scopeKey, peers, selfHave)
 	if len(floor) == 0 {
-		return
+		return false
 	}
 
 	removed := c.set.CompactBelow(scopeKey, floor)
 	if len(removed) == 0 {
-		return
+		return false
 	}
 
 	c.mu.Lock()
@@ -134,12 +151,12 @@ func (c *Compactor) compactScope(scopeKey string) {
 	cp, err := Build(prev.id, treeHead, coversThrough, stateHash, scopeKey, c.signer, time.Now())
 	if err != nil {
 		c.log.Error().Err(err).Str("scope", scopeKey).Msg("checkpoint: failed to build signed checkpoint")
-		return
+		return true // the cut itself already happened; only the checkpoint op failed
 	}
 	env, err := c.pub.Publish(crdt.OpCheckpoint, cp, scopeKey)
 	if err != nil {
 		c.log.Error().Err(err).Str("scope", scopeKey).Msg("checkpoint: failed to publish checkpoint op")
-		return
+		return true
 	}
 
 	c.mu.Lock()
@@ -152,6 +169,7 @@ func (c *Compactor) compactScope(scopeKey string) {
 		Int("compacted", len(removed)).
 		Str("op_id", env.GetOpId()).
 		Msg("compaction checkpoint created")
+	return true
 }
 
 func chainTreeHead(prev, next string) string {

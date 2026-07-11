@@ -40,6 +40,10 @@ func dispatch(args []string) error {
 		return nil
 	case "status":
 		return cmdStatus(args[1:])
+	case "revoke":
+		return cmdRevoke(args[1:])
+	case "compact":
+		return cmdCompact(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -54,7 +58,15 @@ func usage() {
 
 Usage:
   frienctl status [--socket PATH | --config PATH]
+  frienctl revoke sign --node-id ID --fingerprint FP --key PATH [--reason TEXT] [--status tainted|revoked] [--out FILE]
+  frienctl revoke submit [--file FILE] [--socket PATH | --config PATH]
+  frienctl compact [--scope SCOPE] [--socket PATH | --config PATH]
   frienctl version
+
+"revoke sign" runs entirely offline against the operator's own private key
+(never send that key to a node); it writes a base64-encoded signed envelope.
+"revoke submit" reads that envelope and forwards it to a running node, which
+only ever verifies it against the pinned operator public key.
 
 Flags:
   --socket PATH   admin API Unix socket (default `+defaultSocket+`)

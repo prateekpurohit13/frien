@@ -29,6 +29,8 @@ const (
 	AdminService_Breakglass_FullMethodName          = "/frien.v1.AdminService/Breakglass"
 	AdminService_GetHardenReport_FullMethodName     = "/frien.v1.AdminService/GetHardenReport"
 	AdminService_TestPolicy_FullMethodName          = "/frien.v1.AdminService/TestPolicy"
+	AdminService_InjectOperatorOp_FullMethodName    = "/frien.v1.AdminService/InjectOperatorOp"
+	AdminService_TriggerCompaction_FullMethodName   = "/frien.v1.AdminService/TriggerCompaction"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -45,6 +47,17 @@ type AdminServiceClient interface {
 	Breakglass(ctx context.Context, in *BreakglassRequest, opts ...grpc.CallOption) (*BreakglassResponse, error)
 	GetHardenReport(ctx context.Context, in *GetHardenReportRequest, opts ...grpc.CallOption) (*GetHardenReportResponse, error)
 	TestPolicy(ctx context.Context, in *TestPolicyRequest, opts ...grpc.CallOption) (*TestPolicyResponse, error)
+	// InjectOperatorOp submits a fully-formed, already-signed OperationEnvelope
+	// (built offline by an operator tool holding the operator private key --
+	// that key never touches a running node, see docs/security.md) into this
+	// node's local state via the same path a peer-received op takes. Used
+	// day-to-day to mint a revocation: the node only ever verifies against the
+	// pinned operator public key, never signs as operator itself.
+	InjectOperatorOp(ctx context.Context, in *InjectOperatorOpRequest, opts ...grpc.CallOption) (*InjectOperatorOpResponse, error)
+	// TriggerCompaction runs one compaction pass immediately instead of waiting
+	// for the configured interval, for a named scope ("fleet" | "zone:<name>")
+	// or every subscribed scope when scope is empty.
+	TriggerCompaction(ctx context.Context, in *TriggerCompactionRequest, opts ...grpc.CallOption) (*TriggerCompactionResponse, error)
 }
 
 type adminServiceClient struct {
@@ -155,6 +168,26 @@ func (c *adminServiceClient) TestPolicy(ctx context.Context, in *TestPolicyReque
 	return out, nil
 }
 
+func (c *adminServiceClient) InjectOperatorOp(ctx context.Context, in *InjectOperatorOpRequest, opts ...grpc.CallOption) (*InjectOperatorOpResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InjectOperatorOpResponse)
+	err := c.cc.Invoke(ctx, AdminService_InjectOperatorOp_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) TriggerCompaction(ctx context.Context, in *TriggerCompactionRequest, opts ...grpc.CallOption) (*TriggerCompactionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TriggerCompactionResponse)
+	err := c.cc.Invoke(ctx, AdminService_TriggerCompaction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -169,6 +202,17 @@ type AdminServiceServer interface {
 	Breakglass(context.Context, *BreakglassRequest) (*BreakglassResponse, error)
 	GetHardenReport(context.Context, *GetHardenReportRequest) (*GetHardenReportResponse, error)
 	TestPolicy(context.Context, *TestPolicyRequest) (*TestPolicyResponse, error)
+	// InjectOperatorOp submits a fully-formed, already-signed OperationEnvelope
+	// (built offline by an operator tool holding the operator private key --
+	// that key never touches a running node, see docs/security.md) into this
+	// node's local state via the same path a peer-received op takes. Used
+	// day-to-day to mint a revocation: the node only ever verifies against the
+	// pinned operator public key, never signs as operator itself.
+	InjectOperatorOp(context.Context, *InjectOperatorOpRequest) (*InjectOperatorOpResponse, error)
+	// TriggerCompaction runs one compaction pass immediately instead of waiting
+	// for the configured interval, for a named scope ("fleet" | "zone:<name>")
+	// or every subscribed scope when scope is empty.
+	TriggerCompaction(context.Context, *TriggerCompactionRequest) (*TriggerCompactionResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -208,6 +252,12 @@ func (UnimplementedAdminServiceServer) GetHardenReport(context.Context, *GetHard
 }
 func (UnimplementedAdminServiceServer) TestPolicy(context.Context, *TestPolicyRequest) (*TestPolicyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TestPolicy not implemented")
+}
+func (UnimplementedAdminServiceServer) InjectOperatorOp(context.Context, *InjectOperatorOpRequest) (*InjectOperatorOpResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InjectOperatorOp not implemented")
+}
+func (UnimplementedAdminServiceServer) TriggerCompaction(context.Context, *TriggerCompactionRequest) (*TriggerCompactionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TriggerCompaction not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -410,6 +460,42 @@ func _AdminService_TestPolicy_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_InjectOperatorOp_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InjectOperatorOpRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).InjectOperatorOp(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_InjectOperatorOp_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).InjectOperatorOp(ctx, req.(*InjectOperatorOpRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_TriggerCompaction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TriggerCompactionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).TriggerCompaction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_TriggerCompaction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).TriggerCompaction(ctx, req.(*TriggerCompactionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -456,6 +542,14 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TestPolicy",
 			Handler:    _AdminService_TestPolicy_Handler,
+		},
+		{
+			MethodName: "InjectOperatorOp",
+			Handler:    _AdminService_InjectOperatorOp_Handler,
+		},
+		{
+			MethodName: "TriggerCompaction",
+			Handler:    _AdminService_TriggerCompaction_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
