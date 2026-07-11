@@ -293,20 +293,68 @@ Legend: `[x]` = complete and verified | `[ ]` = pending | `[~]` = in progress
       not deferred to Phase 4 as the original placeholder implied
 
 ### Known Phase 4 scope decisions (not gaps left open by mistake)
-- **DAG/parents causal tracking is deliberately not implemented.** Building it properly
-  (assigning causal parents on publish, verifying every parent is locally known before
-  admission or buffering pending ops, root-hash exchange anchored to a checkpoint) is a
-  substantial standalone feature, not a small addition to what exists. The mesh's actual
-  safety properties (equivocation detection, quorum-independent per-op verification,
-  peer-acknowledged compaction) do not depend on it. Revisit if/when causal ordering
-  guarantees beyond HLC + per-node seq become a real requirement.
-- **Only the fleet scope compacts today**, not zone scopes — see `internal/checkpoint`'s
-  package doc for why (membership carries no peer-zone metadata yet, so "every live
-  peer" can't be narrowed to "every live peer that replicates this zone").
 - **Quorum-exclusion of a revoked/tainted node** ("remove from EligibleVoters") has no
   home yet — `internal/policy`/quorum don't exist until Phase 5. Revocation today
   guarantees transport-level rejection and mesh-wide propagation, not yet
   enforcement-quorum exclusion.
+- ~~DAG/parents causal tracking~~ and ~~only-fleet-scope compaction~~ were both closed
+  in the Phase 4 follow-up below the same day; struck through rather than deleted so the
+  original rationale for deferring them stays visible.
+
+### Phase 4 follow-up (2026-07-11, same day): DAG/parents and zone-scope compaction
+Two of Phase 4's four scope decisions closed in a follow-up pass:
+- [x] `internal/crdt/dag.go` — every op's `parents` names the publishing node's own
+      immediately prior op in the *same scope* (a per-scope self-chain — crossing scopes
+      broke a fleet op's convergence to an out-of-zone peer during testing, see the
+      package's `LastOpIDInScope` doc comment for the mechanism). Admission is
+      parent-gated: an op with an unseen parent is buffered (`OpSet.drainPending`,
+      capped, fails open past the cap rather than dropping data or starving forever) and
+      retried once the parent arrives or is found compacted-tombstoned.
+      `OpSet.ChainRoot` gives a compaction-stable per-node digest.
+- [x] Root-hash exchange anchored to a checkpoint — the `since_checkpoint`/`root_hash`
+      fields already reserved on `AntiEntropyRequest` since Phase 3 are now populated
+      from `checkpoint.Compactor.Latest(scopeKey)` and compared on the responder side: a
+      matching checkpoint id with a mismatched `tree_head` is a cheap, op-list-free
+      tamper/corruption signal, logged as a warning (`gossip.Engine.checkCheckpointDivergence`).
+- [x] Zone-scope compaction — `membership.Member`/`Update` carry each peer's
+      self-reported `Zone` (piggybacked on `PeerUpdate` like addresses already were);
+      `gossip.Engine.LiveZonePeers(zone)` restricts a zone's SafeFloor requirement to
+      that zone's actual live membership instead of the whole fleet.
+      `checkpoint.PeerWatermarks` became scope-keyed (previously one number per peer,
+      silently conflating separate scopes' anti-entropy rounds — a latent bug this pass
+      found and fixed, not something zone compaction newly introduced).
+      `checkpoint.Compactor` compacts every subscribed scope independently each round
+      (its own `LivePeersFunc` dispatch, its own checkpoint chain per scope —
+      `Checkpoint` gained a `scope` field so a zone checkpoint doesn't leak fleet-wide).
+- [x] **Real bug found and fixed while wiring zone compaction**:
+      `crdt.OpSet.CompactBelow` took a cut keyed only by `node_id`, applied across *all*
+      scopes that node published into. A node's seq counter is global across scopes it
+      publishes into, so a zone-confirmed cut and a fleet-confirmed cut for the same
+      origin are evidenced completely independently — without a scope filter, compacting
+      past a zone-confirmed cut would also have deleted that origin's interleaved
+      fleet-scoped ops that no fleet peer had ever confirmed holding. `CompactBelow` now
+      takes the scope it's compacting and only removes that scope's ops
+      (`TestCompactBelowIsScopedNotGlobal` reproduces the bug against the pre-fix
+      behavior).
+- **Found and documented, deliberately not fixed**: `crdt.OpSet.ScopeState`'s
+  contiguous-watermark computation filters a node's seq history down to one scope, then
+  requires literal `seq == watermark+1` contiguity *within that filtered subsequence*.
+  Since the underlying seq counter is global across every scope a node publishes into
+  (not per-scope), a single origin that itself interleaves scopes — most concretely, its
+  own zone detections interleaved with its own periodic `internal/checkpoint` publishes,
+  since every node runs the Compactor — can stall that scope's watermark indefinitely
+  (it never advances past 0), which blocks that scope's compaction from ever becoming
+  safe for that origin without over- or under-compacting. A "global full-node-history
+  contiguity" alternative was tried and rejected: it fixes the single-origin case but
+  breaks the *cross-peer* case instead (an out-of-zone peer that never receives that
+  origin's zone ops at all would see a permanent contiguity gap and get stuck computing
+  even the *fleet* watermark for that origin). The clean fix is a second, genuinely
+  per-(node, scope) sequence number carried alongside the existing global one, with
+  `ScopeState`/`MissingInRange`/`CompactBelow`'s cut comparison all switched to it — a
+  wire-format change with enough surface area (proto field, `Publish`'s per-scope
+  counter, every scope-partitioned watermark consumer) that it did not fit this pass.
+  `internal/checkpoint`'s `Compactor` and this doc are the two places that reference it;
+  revisit alongside any other wire-format change.
 
 ---
 

@@ -11,8 +11,19 @@ pattern and the rationale, not the source.
 
 Last updated: 2026-07-11. Phase 1-3 hardening and Phase 4 (tamper-evidence, compaction,
 revocation) are both complete; see `docs/task-checklist.md`'s Phase 4 section for the
-authoritative list of what shipped and the deliberate scope decisions (DAG/parents not
-built; only fleet-scope compaction; no quorum/policy integration yet since that's Phase 5).
+authoritative list of what shipped. Of Phase 4's four originally-deferred scope
+decisions, two are now closed in a follow-up pass the same day: Merkle DAG/parents
+causal tracking (per-scope self-chain + parent-gated admission + checkpoint-anchored
+root-hash exchange) and zone-scope compaction (peer-zone membership metadata +
+scope-keyed SafeFloor). See `docs/task-checklist.md`'s "Phase 4 follow-up" section for
+what shipped, including one real, non-obvious bug this pass found and fixed
+(`crdt.OpSet.CompactBelow` was not scope-filtered, so a zone-confirmed cut could delete
+a different scope's unconfirmed data from the same origin) and one it found and
+documented but did not fix (a single origin interleaving scopes in its own seq counter
+can stall that scope's compaction watermark -- needs a per-scope sequence number, a
+wire-format change out of scope for this pass). The remaining two (an operator CLI/RPC
+to inject revocations/checkpoints, and CA/trust-bundle overlap-window rotation) and
+Phase 5 (policy/quorum/enforcement) are still open.
 
 ## Implementation status
 
