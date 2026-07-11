@@ -336,6 +336,19 @@ Two of Phase 4's four scope decisions closed in a follow-up pass:
       takes the scope it's compacting and only removes that scope's ops
       (`TestCompactBelowIsScopedNotGlobal` reproduces the bug against the pre-fix
       behavior).
+- [x] Operator CLI/RPC to mint+inject revocations and checkpoints —
+      `InjectOperatorOp`/`TriggerCompaction` admin RPCs (gated by
+      `admin_api.read_only`) and `frienctl revoke sign|submit` / `frienctl
+      compact`. `revoke sign` runs fully offline against the operator private
+      key (never sent to a node); `revoke submit` only ever forwards
+      already-signed bytes to `gossip.Engine.Ingest`.
+- [x] CA/trust-bundle overlap-window rotation — `identity.TrustBundle` +
+      `transport.Transport.RefreshTrust`/`RotateCA` admin RPC / `frienctl
+      rotate-ca`. Proven over live QUIC/mTLS handshakes
+      (`TestTrustRotationOverlapWindow`), not just pool algebra.
+
+All four Phase 4 scope decisions are now closed as of 2026-07-11.
+
 - **Found and documented, deliberately not fixed**: `crdt.OpSet.ScopeState`'s
   contiguous-watermark computation filters a node's seq history down to one scope, then
   requires literal `seq == watermark+1` contiguity *within that filtered subsequence*.
