@@ -104,6 +104,9 @@ type Engine struct {
 	peerWatermarks *checkpoint.PeerWatermarks
 	revocations    *revocation.Set
 
+	checkpointMu sync.RWMutex
+	checkpoints  CheckpointSource
+
 	seq atomic.Uint64
 
 	mu        sync.Mutex
@@ -186,6 +189,35 @@ func (e *Engine) LiveFleetPeers() []string {
 // watermarks, the input internal/checkpoint's Compactor needs to compute a
 // safe compaction floor.
 func (e *Engine) PeerWatermarks() *checkpoint.PeerWatermarks { return e.peerWatermarks }
+
+// CheckpointSource is the minimal surface the anti-entropy loop needs to
+// anchor its root-hash exchange to the latest locally-built checkpoint;
+// internal/checkpoint's Compactor satisfies it.
+type CheckpointSource interface {
+	Latest() (id, treeHead string, ok bool)
+}
+
+// SetCheckpointSource wires the compaction loop's latest checkpoint into
+// outgoing anti-entropy requests (since_checkpoint/root_hash) and incoming
+// divergence checks. It is a separate setter rather than a constructor
+// parameter because the Compactor itself is constructed with this Engine as
+// its Publisher -- the two have a circular dependency the caller (cmd/friend)
+// breaks by wiring this second.
+func (e *Engine) SetCheckpointSource(cs CheckpointSource) {
+	e.checkpointMu.Lock()
+	defer e.checkpointMu.Unlock()
+	e.checkpoints = cs
+}
+
+func (e *Engine) latestCheckpoint() (id, treeHead string, ok bool) {
+	e.checkpointMu.RLock()
+	cs := e.checkpoints
+	e.checkpointMu.RUnlock()
+	if cs == nil {
+		return "", "", false
+	}
+	return cs.Latest()
+}
 
 // ScopeState exposes the local op set's per-origin contiguous-seq watermark
 // for scopeKey, the other input the Compactor needs alongside peer watermarks.
@@ -375,6 +407,12 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 	if err != nil {
 		return false
 	}
+	// Only one scope (fleet) has checkpoints today (see internal/checkpoint's
+	// package doc on why zone compaction isn't safe yet), so the same latest
+	// checkpoint is offered regardless of which subscribed scope this
+	// particular request carries it on; the responder's comparison is scope-
+	// agnostic for the same reason.
+	cpID, cpTreeHead, haveCP := e.latestCheckpoint()
 	for _, scopeKey := range e.cfg.SubscribedScopes {
 		haveSeqs, haveAbove := e.set.ScopeState(scopeKey)
 		req := &frienv1.AntiEntropyRequest{
@@ -384,6 +422,10 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 			Scope:        scopeKey,
 			HaveSeqs:     haveSeqs,
 			HaveAbove:    haveAbove,
+		}
+		if haveCP {
+			req.SinceCheckpoint = cpID
+			req.RootHash = cpTreeHead
 		}
 		var resp frienv1.AntiEntropyResponse
 		if err := roundtrip(ctx, sess, kindAntiEntropy, req, &resp); err != nil {
@@ -612,6 +654,7 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 	if e.peerWatermarks != nil {
 		e.peerWatermarks.Observe(req.GetRequesterId(), req.GetHaveSeqs())
 	}
+	e.checkCheckpointDivergence(req)
 	sc, err := scope.Parse(req.GetScope())
 	if err != nil || !e.router.ShouldSend(sc, req.GetZone()) {
 		return &frienv1.AntiEntropyResponse{}
@@ -623,6 +666,32 @@ func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEnt
 	missing := e.set.MissingInRange(req.GetScope(), req.GetHaveSeqs(), above, e.cfg.MaxOpsPerMsg)
 	haveSeqs, _ := e.set.ScopeState(req.GetScope())
 	return &frienv1.AntiEntropyResponse{MissingOps: missing, HaveSeqs: haveSeqs}
+}
+
+// checkCheckpointDivergence is the cheap, op-list-free half of the root-hash
+// exchange: if the requester claims the same checkpoint id this node itself
+// last built, both replicas' history through that cut must hash identically
+// (checkpoints are signed and chained, so the same id can only ever have been
+// derived from the same compaction). A mismatched tree_head under a matching
+// id is a strong tamper/corruption signal -- logged, not enforced, since
+// there is nowhere yet to route a checkpoint-fork proof (see
+// internal/revocation for the analogous case that does have one).
+func (e *Engine) checkCheckpointDivergence(req *frienv1.AntiEntropyRequest) {
+	if req.GetSinceCheckpoint() == "" {
+		return
+	}
+	localID, localTreeHead, ok := e.latestCheckpoint()
+	if !ok || localID != req.GetSinceCheckpoint() {
+		return
+	}
+	if localTreeHead != req.GetRootHash() {
+		e.log.Warn().
+			Str("peer", req.GetRequesterId()).
+			Str("checkpoint_id", localID).
+			Str("local_tree_head", localTreeHead).
+			Str("peer_tree_head", req.GetRootHash()).
+			Msg("checkpoint divergence: same checkpoint id, different tree_head")
+	}
 }
 
 func (e *Engine) directProbe(ctx context.Context, addr string) bool {

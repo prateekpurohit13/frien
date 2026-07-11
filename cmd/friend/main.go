@@ -274,6 +274,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	// Fleet-scope compaction: see internal/checkpoint's package docs for why
 	// only the fleet scope is compacted today.
 	compactor := checkpoint.NewCompactor(set, eng.PeerWatermarks(), eng, eng.LiveFleetPeers, id.Signer(), log)
+	eng.SetCheckpointSource(compactor)
 	go runCompactor(ctx, compactor, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
 
 	return eng, clock, nil

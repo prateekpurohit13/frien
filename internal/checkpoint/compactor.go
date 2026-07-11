@@ -48,6 +48,18 @@ func NewCompactor(set *crdt.OpSet, watermarks *PeerWatermarks, pub Publisher, li
 	return &Compactor{set: set, watermarks: watermarks, pub: pub, livePeers: livePeers, signer: signer, log: log}
 }
 
+// Latest returns the most recent checkpoint this node has itself built (id
+// and its chained tree_head), or ok=false if none has been built yet. The
+// anti-entropy loop uses this to populate AntiEntropyRequest's since_checkpoint
+// and root_hash fields: a peer that reports the same checkpoint id back with a
+// matching tree_head has cheaply confirmed its entire history through that cut
+// is identical to this node's, without exchanging a single op id.
+func (c *Compactor) Latest() (id, treeHead string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastID, c.lastTreeHead, c.lastID != ""
+}
+
 // Run compacts on an interval until ctx is cancelled. A zero interval defaults
 // to one minute.
 func (c *Compactor) Run(ctx context.Context, interval time.Duration) {
