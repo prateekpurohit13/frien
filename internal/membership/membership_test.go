@@ -74,6 +74,28 @@ func TestApplyAddsUnknownMember(t *testing.T) {
 	}
 }
 
+func TestApplyRecordsAndUpdatesZone(t *testing.T) {
+	ml := NewMemberList("self", newFakeClock().Now)
+	ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 1, Zone: "eu"})
+	if m, ok := ml.Get("a"); !ok || m.Zone != "eu" {
+		t.Fatalf("member a = %+v, want zone eu", m)
+	}
+
+	// A higher-incarnation alive claim updates the zone, mirroring how
+	// Addresses is handled.
+	ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 2, Zone: "us"})
+	if m, _ := ml.Get("a"); m.Zone != "us" {
+		t.Fatalf("zone should update to us on a higher-incarnation alive claim, got %q", m.Zone)
+	}
+
+	// An empty zone on a later claim (e.g. a bare self-refutation broadcast
+	// that never learned the zone) must not erase what's already known.
+	ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 3})
+	if m, _ := ml.Get("a"); m.Zone != "us" {
+		t.Fatalf("an empty zone on a later claim should not erase the known zone, got %q", m.Zone)
+	}
+}
+
 func TestApplyIncarnationRules(t *testing.T) {
 	ml := NewMemberList("self", newFakeClock().Now)
 	ml.Apply(Update{NodeID: "a", State: StateAlive, Incarnation: 5})

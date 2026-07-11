@@ -17,16 +17,18 @@ import (
 
 // Build assembles and signs a Checkpoint recording a compaction cut: treeHead
 // (a digest of the op set at the cut), coversThroughHLC (the highest HLC the
-// cut is valid up to), the materialized state hash, and the id of the
-// checkpoint it chains from (empty for the first). The signature covers every
-// other field, so a tampered checkpoint fails Verify.
-func Build(prevID, treeHead, coversThroughHLC, materializedStateHash string, signer *identity.Ed25519Signer, now time.Time) (*frienv1.Checkpoint, error) {
+// cut is valid up to), the materialized state hash, the scope the cut covers
+// ("fleet" or "zone:<name>"), and the id of the checkpoint it chains from
+// (empty for the first, and chains are per-scope -- see Compactor). The
+// signature covers every other field, so a tampered checkpoint fails Verify.
+func Build(prevID, treeHead, coversThroughHLC, materializedStateHash, scopeKey string, signer *identity.Ed25519Signer, now time.Time) (*frienv1.Checkpoint, error) {
 	cp := &frienv1.Checkpoint{
 		CheckpointId:          "cp_" + randomToken(),
 		TreeHead:              treeHead,
 		CoversThroughHlc:      coversThroughHLC,
 		PrevCheckpoint:        prevID,
 		MaterializedStateHash: materializedStateHash,
+		Scope:                 scopeKey,
 		CreatedAt:             now.UTC().Format(time.RFC3339),
 		SignedBy:              "node",
 	}

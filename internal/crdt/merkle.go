@@ -21,8 +21,10 @@ type Digest struct {
 
 // scopeOf returns the replication scope an op belongs to. Threat records carry
 // their own scope; a retraction inherits its target's scope when the target is
-// known; everything else is fleet (control-plane ops gossip mesh-wide). It
-// assumes the lock is held.
+// known; a checkpoint carries the scope of the cut it covers (see
+// internal/checkpoint.Build) so a zone checkpoint doesn't leak fleet-wide;
+// everything else is fleet (control-plane ops gossip mesh-wide). It assumes
+// the lock is held.
 func (s *OpSet) scopeOf(env *frienv1.OperationEnvelope) string {
 	switch env.GetOpType() {
 	case OpThreatRecord:
@@ -37,6 +39,13 @@ func (s *OpSet) scopeOf(env *frienv1.OperationEnvelope) string {
 		if proto.Unmarshal(env.GetPayload(), &r) == nil {
 			if target, ok := s.ops[r.GetTargetOpId()]; ok {
 				return s.scopeOf(target)
+			}
+		}
+	case OpCheckpoint:
+		var cp frienv1.Checkpoint
+		if proto.Unmarshal(env.GetPayload(), &cp) == nil {
+			if _, err := scope.Parse(cp.GetScope()); err == nil {
+				return cp.GetScope()
 			}
 		}
 	}

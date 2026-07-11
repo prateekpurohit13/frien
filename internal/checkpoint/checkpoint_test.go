@@ -21,7 +21,7 @@ func newTestSigner(t *testing.T) *identity.Ed25519Signer {
 
 func TestBuildProducesVerifiableCheckpoint(t *testing.T) {
 	signer := newTestSigner(t)
-	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", signer, time.Now())
+	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", "fleet", signer, time.Now())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestBuildProducesVerifiableCheckpoint(t *testing.T) {
 
 func TestVerifyRejectsTamperedField(t *testing.T) {
 	signer := newTestSigner(t)
-	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", signer, time.Now())
+	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", "fleet", signer, time.Now())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestVerifyRejectsTamperedField(t *testing.T) {
 func TestVerifyRejectsWrongKey(t *testing.T) {
 	signer := newTestSigner(t)
 	other := newTestSigner(t)
-	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", signer, time.Now())
+	cp, err := Build("", "tree-hash", "2026-01-01T00:00:00Z", "state-hash", "fleet", signer, time.Now())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -59,8 +59,8 @@ func TestVerifyRejectsWrongKey(t *testing.T) {
 
 func TestBuildChainsToPrevCheckpoint(t *testing.T) {
 	signer := newTestSigner(t)
-	first, _ := Build("", "t1", "hlc1", "s1", signer, time.Now())
-	second, err := Build(first.GetCheckpointId(), "t2", "hlc2", "s2", signer, time.Now())
+	first, _ := Build("", "t1", "hlc1", "s1", "fleet", signer, time.Now())
+	second, err := Build(first.GetCheckpointId(), "t2", "hlc2", "s2", "fleet", signer, time.Now())
 	if err != nil {
 		t.Fatalf("build second: %v", err)
 	}

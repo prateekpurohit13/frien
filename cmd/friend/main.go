@@ -271,9 +271,17 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	}
 	log.Info().Str("peer_bind", cfg.Transport.PeerBind).Int("peer_port", cfg.Transport.PeerPort).Msg("peer mesh started")
 
-	// Fleet-scope compaction: see internal/checkpoint's package docs for why
-	// only the fleet scope is compacted today.
-	compactor := checkpoint.NewCompactor(set, eng.PeerWatermarks(), eng, eng.LiveFleetPeers, id.Signer(), log)
+	// Compacts the fleet scope and every zone scope this node subscribes to
+	// (its own zone; an aggregator's extra zones too, see scope.Router). The
+	// livePeers dispatch below is what makes a zone's SafeFloor check only
+	// that zone's actual membership instead of the whole fleet.
+	compactor := checkpoint.NewCompactor(set, eng.PeerWatermarks(), eng, eng.SubscribedScopeKeys, func(scopeKey string) []string {
+		sc, err := scope.Parse(scopeKey)
+		if err != nil || sc.Kind == scope.Fleet {
+			return eng.LiveFleetPeers()
+		}
+		return eng.LiveZonePeers(sc.Zone)
+	}, id.Signer(), log)
 	eng.SetCheckpointSource(compactor)
 	go runCompactor(ctx, compactor, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
 

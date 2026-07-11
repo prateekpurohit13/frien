@@ -330,7 +330,7 @@ func TestCompactBelowRemovesOldOpsBoundedByCut(t *testing.T) {
 	for sq := uint64(1); sq <= 5; sq++ {
 		s.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
 	}
-	removed := s.CompactBelow(map[string]uint64{"node.a": 3})
+	removed := s.CompactBelow("fleet", map[string]uint64{"node.a": 3})
 	if len(removed) != 3 {
 		t.Fatalf("should compact seqs 1-3, got %d removed", len(removed))
 	}
@@ -354,12 +354,55 @@ func TestCompactBelowRemovesOldOpsBoundedByCut(t *testing.T) {
 	}
 }
 
+// TestCompactBelowIsScopedNotGlobal proves the fix for a real data-loss
+// vector: a node's seq counter is global across every scope it publishes
+// into (see LastOpIDInScope), so a cut computed from one scope's peer
+// confirmations must never delete a *different* scope's ops from the same
+// origin, even when their seqs fall in the same numeric range. Before
+// CompactBelow took a scopeKey, a zone-confirmed cut would also have deleted
+// that origin's interleaved fleet ops that no fleet peer had confirmed.
+func TestCompactBelowIsScopedNotGlobal(t *testing.T) {
+	s := NewOpSet()
+	// Interleave: seq 1 fleet, seq 2 zone:eu, seq 3 fleet, seq 4 zone:eu.
+	addScoped := func(id string, seq uint64, scopeKey string) {
+		tr := &frienv1.ThreatRecord{Id: id, Indicator: "203.0.113.1", Scope: scopeKey}
+		payload, err := proto.Marshal(tr)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		env := &frienv1.OperationEnvelope{
+			OpId: id, OpType: OpThreatRecord, NodeId: "node.a", Seq: seq,
+			PayloadHash: payloadHash(payload), Payload: payload,
+		}
+		if _, err := s.Add(env); err != nil {
+			t.Fatalf("add %s: %v", id, err)
+		}
+	}
+	addScoped("f1", 1, "fleet")
+	addScoped("z1", 2, "zone:eu")
+	addScoped("f2", 3, "fleet")
+	addScoped("z2", 4, "zone:eu")
+
+	// A cut of 4 for node.a, applied only to zone:eu, must leave both fleet
+	// ops untouched even though their seqs (1, 3) are below the cut.
+	removed := s.CompactBelow("zone:eu", map[string]uint64{"node.a": 4})
+	if len(removed) != 2 || removed[0].GetOpId() != "z1" || removed[1].GetOpId() != "z2" {
+		t.Fatalf("expected only z1,z2 removed, got %+v", removed)
+	}
+	if !s.Has("f1") || !s.Has("f2") {
+		t.Fatal("fleet ops must survive a zone-scoped compaction cut even at lower seqs")
+	}
+	if s.Has("z1") || s.Has("z2") {
+		t.Fatal("zone ops should have been compacted")
+	}
+}
+
 func TestCompactBelowLeavesUnknownOriginsUntouched(t *testing.T) {
 	s := NewOpSet()
 	s.Add(threatEnv(t, "a1", "node.a", 1, ""))
 	s.Add(threatEnv(t, "b1", "node.b", 1, ""))
 	// Only node.a has a known cut; node.b must be left alone entirely.
-	s.CompactBelow(map[string]uint64{"node.a": 100})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 100})
 	if s.Has("a1") {
 		t.Fatal("node.a's op should be compacted")
 	}
@@ -373,7 +416,7 @@ func TestCompactBelowPreservesEquivocationEvidence(t *testing.T) {
 	s.Add(threatEnv(t, "opA", "node.a", 1, ""))
 	s.Add(threatEnv(t, "opB", "node.a", 1, "")) // fork at (node.a, 1)
 
-	s.CompactBelow(map[string]uint64{"node.a": 100})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 100})
 	if !s.Has("opA") || !s.Has("opB") {
 		t.Fatal("equivocation evidence must survive compaction even below the cut")
 	}
@@ -385,7 +428,7 @@ func TestCompactBelowRemovesScopeIndexEntry(t *testing.T) {
 	if len(s.OpIDsInScope("fleet")) != 1 {
 		t.Fatal("op should be indexed under fleet before compaction")
 	}
-	s.CompactBelow(map[string]uint64{"node.a": 100})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 100})
 	if len(s.OpIDsInScope("fleet")) != 0 {
 		t.Fatal("scope index entry should be removed alongside the op")
 	}
@@ -395,7 +438,7 @@ func TestCompactedReplayDoesNotResurrect(t *testing.T) {
 	s := NewOpSet()
 	env := threatEnv(t, "op1", "node.a", 1, "")
 	s.Add(env)
-	s.CompactBelow(map[string]uint64{"node.a": 100})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 100})
 	if s.Has("op1") {
 		t.Fatal("precondition: op1 should be compacted")
 	}
@@ -416,7 +459,7 @@ func TestCompactedReplayDoesNotResurrect(t *testing.T) {
 func TestCompactedSeqStillDetectsLateEquivocation(t *testing.T) {
 	s := NewOpSet()
 	s.Add(threatEnv(t, "original", "node.a", 1, ""))
-	s.CompactBelow(map[string]uint64{"node.a": 100})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 100})
 
 	// A different op_id at the same (node_id, seq) arrives after the original
 	// was compacted: this is still equivocation, and must still be flagged,
@@ -441,7 +484,7 @@ func TestScopeStateWatermarkAdvancesPastCompactedRegion(t *testing.T) {
 	for sq := uint64(1); sq <= 3; sq++ {
 		s.Add(threatEnv(t, fmt.Sprintf("op%d", sq), "node.a", sq, ""))
 	}
-	s.CompactBelow(map[string]uint64{"node.a": 3})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 3})
 
 	haveSeqs, haveAbove := s.ScopeState("fleet")
 	if haveSeqs["node.a"] != 3 {

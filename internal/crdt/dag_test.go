@@ -79,7 +79,7 @@ func TestParentsSatisfiedByCompactedTombstone(t *testing.T) {
 	if _, err := s.Add(parent); err != nil {
 		t.Fatalf("add parent: %v", err)
 	}
-	s.CompactBelow(map[string]uint64{"node.a": 1})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 1})
 	if s.Has("parent") {
 		t.Fatal("parent should have been compacted out")
 	}
@@ -129,7 +129,7 @@ func TestChainRootStableAcrossCompaction(t *testing.T) {
 		t.Fatal("expected a non-empty chain root")
 	}
 
-	s.CompactBelow(map[string]uint64{"node.a": 3})
+	s.CompactBelow("fleet", map[string]uint64{"node.a": 3})
 	after := s.ChainRoot("node.a")
 	if before != after {
 		t.Fatalf("chain root changed across compaction: before=%s after=%s", before, after)

@@ -136,6 +136,7 @@ message Checkpoint {
   string          created_at              = 7;  // RFC3339
   string          signed_by               = 8;
   bytes           signature               = 9;
+  string          scope                   = 10; // the scope this cut covers ("fleet" | "zone:<name>")
 }
 
 message RevocationRecord {
@@ -318,6 +319,7 @@ message PeerUpdate {
   uint32          state        = 3;  // 0=alive 1=suspect 2=dead 3=left
   uint64          incarnation  = 4;
   string          from_node_id = 5;  // node asserting this state; distinct asserters accelerate suspicion
+  string          zone         = 6;  // the node's own replication zone, carried on its self-update
 }
 
 message Ping {

@@ -50,7 +50,10 @@ func TestClusterCompactsFleetScopeOnceAllPeersConfirm(t *testing.T) {
 		t.Fatal("ops did not converge to node.b")
 	}
 
-	compactor := checkpoint.NewCompactor(a.set, a.eng.PeerWatermarks(), a.eng, a.eng.LiveFleetPeers, a.eng.signer, zerolog.Nop())
+	compactor := checkpoint.NewCompactor(a.set, a.eng.PeerWatermarks(), a.eng,
+		func() []string { return []string{"fleet"} },
+		func(string) []string { return a.eng.LiveFleetPeers() },
+		a.eng.signer, zerolog.Nop())
 
 	// Wait for node.b to have reported (via anti-entropy) a watermark for
 	// node.a that covers all 3 published ops -- the precondition SafeFloor

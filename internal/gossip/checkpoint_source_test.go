@@ -13,11 +13,11 @@ type fakeCheckpointSource struct {
 	ok           bool
 }
 
-func (f fakeCheckpointSource) Latest() (string, string, bool) { return f.id, f.treeHead, f.ok }
+func (f fakeCheckpointSource) Latest(string) (string, string, bool) { return f.id, f.treeHead, f.ok }
 
 func TestLatestCheckpointNilSourceIsFalse(t *testing.T) {
 	e := &Engine{log: zerolog.Nop()}
-	if _, _, ok := e.latestCheckpoint(); ok {
+	if _, _, ok := e.latestCheckpoint("fleet"); ok {
 		t.Fatal("expected no checkpoint before SetCheckpointSource")
 	}
 }
@@ -25,7 +25,7 @@ func TestLatestCheckpointNilSourceIsFalse(t *testing.T) {
 func TestSetCheckpointSourcePopulatesRequest(t *testing.T) {
 	e := &Engine{log: zerolog.Nop()}
 	e.SetCheckpointSource(fakeCheckpointSource{id: "cp_1", treeHead: "th_1", ok: true})
-	id, th, ok := e.latestCheckpoint()
+	id, th, ok := e.latestCheckpoint("fleet")
 	if !ok || id != "cp_1" || th != "th_1" {
 		t.Fatalf("latestCheckpoint() = %q, %q, %v; want cp_1, th_1, true", id, th, ok)
 	}

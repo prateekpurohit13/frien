@@ -185,6 +185,39 @@ func (e *Engine) LiveFleetPeers() []string {
 	return out
 }
 
+// LiveZonePeers returns the node ids of currently active peers (alive or
+// suspect, excluding self) that this node has observed reporting membership
+// in zone. This is what unblocks zone-scope compaction: internal/checkpoint's
+// SafeFloor requires a watermark from every entry in its livePeers argument,
+// and restricting that list to a zone's actual membership (via each peer's
+// self-reported Zone on its PeerUpdate) is what makes "every live peer" mean
+// "every live peer that actually replicates this zone" instead of the whole
+// fleet, which previously would have permanently blocked the floor (see
+// internal/checkpoint's former fleet-only package doc). A peer this node has
+// never yet heard a self-announcement from reports an empty Zone and is
+// correctly excluded until it does.
+func (e *Engine) LiveZonePeers(zone string) []string {
+	members := e.swim.List().ActiveMembers()
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.NodeID != e.cfg.NodeID && m.Zone == zone {
+			out = append(out, m.NodeID)
+		}
+	}
+	return out
+}
+
+// SubscribedScopeKeys returns the scope keys this node compacts a checkpoint
+// for: the fleet scope, plus one zone scope per zone this node's router
+// subscribes to (its own zone, and any extra zones an aggregator carries).
+func (e *Engine) SubscribedScopeKeys() []string {
+	out := []string{"fleet"}
+	for _, z := range e.router.SubscribedZones() {
+		out = append(out, "zone:"+z)
+	}
+	return out
+}
+
 // PeerWatermarks exposes the tracker of peer-acknowledged anti-entropy
 // watermarks, the input internal/checkpoint's Compactor needs to compute a
 // safe compaction floor.
@@ -194,7 +227,7 @@ func (e *Engine) PeerWatermarks() *checkpoint.PeerWatermarks { return e.peerWate
 // anchor its root-hash exchange to the latest locally-built checkpoint;
 // internal/checkpoint's Compactor satisfies it.
 type CheckpointSource interface {
-	Latest() (id, treeHead string, ok bool)
+	Latest(scopeKey string) (id, treeHead string, ok bool)
 }
 
 // SetCheckpointSource wires the compaction loop's latest checkpoint into
@@ -209,14 +242,14 @@ func (e *Engine) SetCheckpointSource(cs CheckpointSource) {
 	e.checkpoints = cs
 }
 
-func (e *Engine) latestCheckpoint() (id, treeHead string, ok bool) {
+func (e *Engine) latestCheckpoint(scopeKey string) (id, treeHead string, ok bool) {
 	e.checkpointMu.RLock()
 	cs := e.checkpoints
 	e.checkpointMu.RUnlock()
 	if cs == nil {
 		return "", "", false
 	}
-	return cs.Latest()
+	return cs.Latest(scopeKey)
 }
 
 // ScopeState exposes the local op set's per-origin contiguous-seq watermark
@@ -227,8 +260,8 @@ func (e *Engine) ScopeState(scopeKey string) (map[string]uint64, []string) {
 
 // CompactBelow applies a compaction floor to the local op set, forwarding to
 // the underlying OpSet (see crdt.OpSet.CompactBelow for the safety contract).
-func (e *Engine) CompactBelow(cuts map[string]uint64) []*frienv1.OperationEnvelope {
-	return e.set.CompactBelow(cuts)
+func (e *Engine) CompactBelow(scopeKey string, cuts map[string]uint64) []*frienv1.OperationEnvelope {
+	return e.set.CompactBelow(scopeKey, cuts)
 }
 
 // Watermarks returns the highest HLC observed per origin node, for the Phase 4
@@ -407,12 +440,6 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 	if err != nil {
 		return false
 	}
-	// Only one scope (fleet) has checkpoints today (see internal/checkpoint's
-	// package doc on why zone compaction isn't safe yet), so the same latest
-	// checkpoint is offered regardless of which subscribed scope this
-	// particular request carries it on; the responder's comparison is scope-
-	// agnostic for the same reason.
-	cpID, cpTreeHead, haveCP := e.latestCheckpoint()
 	for _, scopeKey := range e.cfg.SubscribedScopes {
 		haveSeqs, haveAbove := e.set.ScopeState(scopeKey)
 		req := &frienv1.AntiEntropyRequest{
@@ -423,7 +450,7 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 			HaveSeqs:     haveSeqs,
 			HaveAbove:    haveAbove,
 		}
-		if haveCP {
+		if cpID, cpTreeHead, haveCP := e.latestCheckpoint(scopeKey); haveCP {
 			req.SinceCheckpoint = cpID
 			req.RootHash = cpTreeHead
 		}
@@ -436,7 +463,7 @@ func (e *Engine) syncPeer(ctx context.Context, m membership.Member) bool {
 			e.ingest(env)
 		}
 		if e.peerWatermarks != nil {
-			e.peerWatermarks.Observe(m.NodeID, resp.GetHaveSeqs())
+			e.peerWatermarks.Observe(m.NodeID, scopeKey, resp.GetHaveSeqs())
 		}
 	}
 	return true
@@ -625,6 +652,7 @@ func (e *Engine) outUpdates() []*frienv1.PeerUpdate {
 	self := &frienv1.PeerUpdate{
 		NodeId:      e.cfg.NodeID,
 		Addresses:   []string{e.cfg.LocalAddr},
+		Zone:        e.cfg.Zone,
 		State:       uint32(membership.StateAlive),
 		Incarnation: e.swim.List().LocalIncarnation(),
 	}
@@ -652,7 +680,7 @@ func (e *Engine) OnPingReq(ctx context.Context, pr *frienv1.PingReq) *frienv1.Ac
 // are iterated in sorted order, so successive rounds page forward deterministically.
 func (e *Engine) OnAntiEntropy(req *frienv1.AntiEntropyRequest) *frienv1.AntiEntropyResponse {
 	if e.peerWatermarks != nil {
-		e.peerWatermarks.Observe(req.GetRequesterId(), req.GetHaveSeqs())
+		e.peerWatermarks.Observe(req.GetRequesterId(), req.GetScope(), req.GetHaveSeqs())
 	}
 	e.checkCheckpointDivergence(req)
 	sc, err := scope.Parse(req.GetScope())
@@ -680,7 +708,7 @@ func (e *Engine) checkCheckpointDivergence(req *frienv1.AntiEntropyRequest) {
 	if req.GetSinceCheckpoint() == "" {
 		return
 	}
-	localID, localTreeHead, ok := e.latestCheckpoint()
+	localID, localTreeHead, ok := e.latestCheckpoint(req.GetScope())
 	if !ok || localID != req.GetSinceCheckpoint() {
 		return
 	}

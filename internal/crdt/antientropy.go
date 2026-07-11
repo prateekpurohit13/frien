@@ -12,13 +12,23 @@ import (
 type AcceptFunc func(env *frienv1.OperationEnvelope) bool
 
 // EnvelopeScope returns the scope used for ingress acceptance. Threat records
-// carry their scope; retractions ride the fleet (an author withdrawal is a
+// carry their scope; a checkpoint carries the scope of the cut it covers
+// (mirrors scopeOf, so a zone checkpoint is symmetrically egress- and
+// ingress-gated); retractions ride the fleet (an author withdrawal is a
 // harmless no-op on a node that never held the target); other ops are fleet.
 func EnvelopeScope(env *frienv1.OperationEnvelope) scope.Scope {
-	if env.GetOpType() == OpThreatRecord {
+	switch env.GetOpType() {
+	case OpThreatRecord:
 		var tr frienv1.ThreatRecord
 		if proto.Unmarshal(env.GetPayload(), &tr) == nil {
 			if sc, err := scope.Parse(tr.GetScope()); err == nil {
+				return sc
+			}
+		}
+	case OpCheckpoint:
+		var cp frienv1.Checkpoint
+		if proto.Unmarshal(env.GetPayload(), &cp) == nil {
+			if sc, err := scope.Parse(cp.GetScope()); err == nil {
 				return sc
 			}
 		}

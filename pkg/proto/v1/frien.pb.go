@@ -720,6 +720,7 @@ type Checkpoint struct {
 	CreatedAt             string                 `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"` // RFC3339
 	SignedBy              string                 `protobuf:"bytes,8,opt,name=signed_by,json=signedBy,proto3" json:"signed_by,omitempty"`
 	Signature             []byte                 `protobuf:"bytes,9,opt,name=signature,proto3" json:"signature,omitempty"`
+	Scope                 string                 `protobuf:"bytes,10,opt,name=scope,proto3" json:"scope,omitempty"` // the scope this cut covers ("fleet" | "zone:<name>")
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -815,6 +816,13 @@ func (x *Checkpoint) GetSignature() []byte {
 		return x.Signature
 	}
 	return nil
+}
+
+func (x *Checkpoint) GetScope() string {
+	if x != nil {
+		return x.Scope
+	}
+	return ""
 }
 
 type RevocationRecord struct {
@@ -2434,6 +2442,7 @@ type PeerUpdate struct {
 	State         uint32                 `protobuf:"varint,3,opt,name=state,proto3" json:"state,omitempty"` // 0=alive 1=suspect 2=dead 3=left
 	Incarnation   uint64                 `protobuf:"varint,4,opt,name=incarnation,proto3" json:"incarnation,omitempty"`
 	FromNodeId    string                 `protobuf:"bytes,5,opt,name=from_node_id,json=fromNodeId,proto3" json:"from_node_id,omitempty"` // node asserting this state; distinct asserters accelerate suspicion
+	Zone          string                 `protobuf:"bytes,6,opt,name=zone,proto3" json:"zone,omitempty"`                                 // the node's own replication zone, carried on its self-update
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2499,6 +2508,13 @@ func (x *PeerUpdate) GetIncarnation() uint64 {
 func (x *PeerUpdate) GetFromNodeId() string {
 	if x != nil {
 		return x.FromNodeId
+	}
+	return ""
+}
+
+func (x *PeerUpdate) GetZone() string {
+	if x != nil {
+		return x.Zone
 	}
 	return ""
 }
@@ -3018,7 +3034,7 @@ const file_frien_proto_rawDesc = "" +
 	" \x01(\bR\arevoked\x12\x1b\n" +
 	"\tlast_seen\x18\v \x01(\tR\blastSeen\x12+\n" +
 	"\x11misbehavior_score\x18\f \x01(\x05R\x10misbehaviorScore\x12\x1c\n" +
-	"\taddresses\x18\r \x03(\tR\taddresses\"\xd4\x02\n" +
+	"\taddresses\x18\r \x03(\tR\taddresses\"\xea\x02\n" +
 	"\n" +
 	"Checkpoint\x12#\n" +
 	"\rcheckpoint_id\x18\x01 \x01(\tR\fcheckpointId\x12\x1b\n" +
@@ -3030,7 +3046,9 @@ const file_frien_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\a \x01(\tR\tcreatedAt\x12\x1b\n" +
 	"\tsigned_by\x18\b \x01(\tR\bsignedBy\x12\x1c\n" +
-	"\tsignature\x18\t \x01(\fR\tsignature\"\x98\x02\n" +
+	"\tsignature\x18\t \x01(\fR\tsignature\x12\x14\n" +
+	"\x05scope\x18\n" +
+	" \x01(\tR\x05scope\"\x98\x02\n" +
 	"\x10RevocationRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12)\n" +
 	"\x10cert_fingerprint\x18\x02 \x01(\tR\x0fcertFingerprint\x12\x17\n" +
@@ -3160,7 +3178,7 @@ const file_frien_proto_rawDesc = "" +
 	"have_above\x18\t \x03(\tR\thaveAbove\x1a;\n" +
 	"\rHaveSeqsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x9d\x01\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\xb1\x01\n" +
 	"\n" +
 	"PeerUpdate\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1c\n" +
@@ -3168,7 +3186,8 @@ const file_frien_proto_rawDesc = "" +
 	"\x05state\x18\x03 \x01(\rR\x05state\x12 \n" +
 	"\vincarnation\x18\x04 \x01(\x04R\vincarnation\x12 \n" +
 	"\ffrom_node_id\x18\x05 \x01(\tR\n" +
-	"fromNodeId\"\x81\x01\n" +
+	"fromNodeId\x12\x12\n" +
+	"\x04zone\x18\x06 \x01(\tR\x04zone\"\x81\x01\n" +
 	"\x04Ping\x12#\n" +
 	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12$\n" +
 	"\x0esender_node_id\x18\x02 \x01(\tR\fsenderNodeId\x12.\n" +

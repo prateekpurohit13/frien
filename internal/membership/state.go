@@ -34,6 +34,7 @@ func (s State) String() string {
 type Member struct {
 	NodeID      string
 	Addresses   []string
+	Zone        string
 	State       State
 	Incarnation uint64
 	StateChange time.Time
@@ -51,6 +52,7 @@ func (m Member) ConfirmerCount() int { return len(m.confirmers) }
 type Update struct {
 	NodeID      string
 	Addresses   []string
+	Zone        string
 	State       State
 	Incarnation uint64
 	From        string // node asserting this state; drives confirmation-accelerated suspicion
@@ -113,6 +115,7 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 		mem := &Member{
 			NodeID:      u.NodeID,
 			Addresses:   u.Addresses,
+			Zone:        u.Zone,
 			State:       u.State,
 			Incarnation: u.Incarnation,
 			StateChange: m.now(),
@@ -138,6 +141,9 @@ func (m *MemberList) Apply(u Update) ApplyResult {
 					res.PrevAddresses = cur.Addresses
 				}
 				cur.Addresses = u.Addresses
+			}
+			if u.Zone != "" {
+				cur.Zone = u.Zone
 			}
 			return res
 		}

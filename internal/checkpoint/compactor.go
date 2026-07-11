@@ -13,51 +13,65 @@ import (
 	frienv1 "github.com/prateekpurohit13/frien/pkg/proto/v1"
 )
 
-// fleetScope is the only scope Compactor compacts. A zone scope cannot safely
-// use the same mechanism yet: SafeFloor requires a watermark report from
-// every live peer, but membership does not carry peer zone metadata, so there
-// is no way to restrict "every live peer" to "every live peer that replicates
-// this zone" -- a peer outside the zone would never legitimately report a
-// watermark for it and would permanently block the floor. Fleet-scoped data
-// is replicated to every node, so this restriction does not apply there.
-const fleetScope = "fleet"
-
 // Publisher is the minimal surface Compactor needs to gossip a signed
 // checkpoint op; gossip.Engine satisfies it.
 type Publisher interface {
 	Publish(opType string, payload proto.Message, scopeKey string) (*frienv1.OperationEnvelope, error)
 }
 
-// Compactor periodically computes a peer-acknowledged safe cut for the fleet
-// scope, applies it to the local op set, and publishes a signed Checkpoint
-// chaining from the previous one recording each cut actually taken.
+// LivePeersFunc returns the node ids of currently active peers that actually
+// replicate scopeKey, excluding self -- gossip.Engine.LiveFleetPeers for
+// "fleet", gossip.Engine.LiveZonePeers(zone) for a "zone:<name>" key. A
+// SafeFloor computed against the wrong set (e.g. the whole fleet for a zone
+// scope) would either never be safe to use (an out-of-zone peer never
+// legitimately reports a zone watermark, permanently blocking the floor) or,
+// worse, compact data a real in-zone peer hasn't synced yet -- see this
+// package's former single-scope doc comment for the fleet-only restriction
+// this generalization replaces.
+type LivePeersFunc func(scopeKey string) []string
+
+type checkpointState struct{ id, treeHead string }
+
+// Compactor periodically computes a peer-acknowledged safe cut for each scope
+// it's given, applies it to the local op set, and publishes a signed
+// Checkpoint per scope chaining from that scope's previous one recording each
+// cut actually taken. Each scope's chain is independent: a fleet checkpoint
+// and a zone checkpoint never share a prev_checkpoint lineage.
 type Compactor struct {
 	set        *crdt.OpSet
 	watermarks *PeerWatermarks
 	pub        Publisher
-	livePeers  func() []string
+	scopes     func() []string
+	livePeers  LivePeersFunc
 	signer     *identity.Ed25519Signer
 	log        zerolog.Logger
 
-	mu           sync.Mutex
-	lastID       string
-	lastTreeHead string
+	mu   sync.Mutex
+	last map[string]checkpointState // scope_key -> latest checkpoint built for it
 }
 
-func NewCompactor(set *crdt.OpSet, watermarks *PeerWatermarks, pub Publisher, livePeers func() []string, signer *identity.Ed25519Signer, log zerolog.Logger) *Compactor {
-	return &Compactor{set: set, watermarks: watermarks, pub: pub, livePeers: livePeers, signer: signer, log: log}
+// NewCompactor builds a Compactor. scopes is called fresh each RunOnce so a
+// node whose subscribed zones change (an aggregator reconfigured) picks that
+// up without a restart.
+func NewCompactor(set *crdt.OpSet, watermarks *PeerWatermarks, pub Publisher, scopes func() []string, livePeers LivePeersFunc, signer *identity.Ed25519Signer, log zerolog.Logger) *Compactor {
+	return &Compactor{
+		set: set, watermarks: watermarks, pub: pub, scopes: scopes, livePeers: livePeers,
+		signer: signer, log: log, last: make(map[string]checkpointState),
+	}
 }
 
-// Latest returns the most recent checkpoint this node has itself built (id
-// and its chained tree_head), or ok=false if none has been built yet. The
-// anti-entropy loop uses this to populate AntiEntropyRequest's since_checkpoint
-// and root_hash fields: a peer that reports the same checkpoint id back with a
-// matching tree_head has cheaply confirmed its entire history through that cut
-// is identical to this node's, without exchanging a single op id.
-func (c *Compactor) Latest() (id, treeHead string, ok bool) {
+// Latest returns the most recent checkpoint this node has itself built for
+// scopeKey (id and its chained tree_head), or ok=false if none has been built
+// yet. The anti-entropy loop uses this to populate AntiEntropyRequest's
+// since_checkpoint and root_hash fields: a peer that reports the same
+// checkpoint id back with a matching tree_head has cheaply confirmed its
+// entire history through that cut is identical to this node's, without
+// exchanging a single op id.
+func (c *Compactor) Latest(scopeKey string) (id, treeHead string, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.lastID, c.lastTreeHead, c.lastID != ""
+	st, ok := c.last[scopeKey]
+	return st.id, st.treeHead, ok
 }
 
 // Run compacts on an interval until ctx is cancelled. A zero interval defaults
@@ -78,50 +92,62 @@ func (c *Compactor) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// RunOnce computes the current safe floor for the fleet scope and compacts
-// the local set once, publishing a signed checkpoint if anything was removed.
-// It is a no-op whenever SafeFloor is not yet safe to use (not every live
-// peer has been confirmed) or nothing crosses the resulting cut.
+// RunOnce attempts a compaction cut for every currently configured scope.
+// Each scope is independent: one scope having no safe floor yet (or nothing
+// to compact) does not block the others.
 func (c *Compactor) RunOnce() {
-	peers := c.livePeers()
-	selfHave, _ := c.set.ScopeState(fleetScope)
-	floor := c.watermarks.SafeFloor(peers, selfHave)
+	for _, scopeKey := range c.scopes() {
+		c.compactScope(scopeKey)
+	}
+}
+
+// compactScope computes the current safe floor for scopeKey and compacts the
+// local set once, publishing a signed checkpoint if anything was removed. It
+// is a no-op whenever SafeFloor is not yet safe to use (not every live peer
+// that replicates scopeKey has been confirmed) or nothing crosses the
+// resulting cut.
+func (c *Compactor) compactScope(scopeKey string) {
+	peers := c.livePeers(scopeKey)
+	selfHave, _ := c.set.ScopeState(scopeKey)
+	floor := c.watermarks.SafeFloor(scopeKey, peers, selfHave)
 	if len(floor) == 0 {
 		return
 	}
 
-	removed := c.set.CompactBelow(floor)
+	removed := c.set.CompactBelow(scopeKey, floor)
 	if len(removed) == 0 {
 		return
 	}
 
 	c.mu.Lock()
-	prevID, prevTreeHead := c.lastID, c.lastTreeHead
+	prev := c.last[scopeKey]
 	c.mu.Unlock()
 
-	// The tree head chains from the prior checkpoint's, so it commits to the
-	// full compaction history rather than only the latest round -- a replayed
-	// or reordered checkpoint op does not reproduce a later tree head.
-	treeHead := chainTreeHead(prevTreeHead, treeHeadFor(removed))
+	// The tree head chains from the prior checkpoint's for this scope, so it
+	// commits to the full compaction history for that scope rather than only
+	// the latest round -- a replayed or reordered checkpoint op does not
+	// reproduce a later tree head.
+	treeHead := chainTreeHead(prev.treeHead, treeHeadFor(removed))
 	coversThrough := highestHLC(removed)
 	stateHash := c.set.CanonicalHash()
 
-	cp, err := Build(prevID, treeHead, coversThrough, stateHash, c.signer, time.Now())
+	cp, err := Build(prev.id, treeHead, coversThrough, stateHash, scopeKey, c.signer, time.Now())
 	if err != nil {
-		c.log.Error().Err(err).Msg("checkpoint: failed to build signed checkpoint")
+		c.log.Error().Err(err).Str("scope", scopeKey).Msg("checkpoint: failed to build signed checkpoint")
 		return
 	}
-	env, err := c.pub.Publish(crdt.OpCheckpoint, cp, fleetScope)
+	env, err := c.pub.Publish(crdt.OpCheckpoint, cp, scopeKey)
 	if err != nil {
-		c.log.Error().Err(err).Msg("checkpoint: failed to publish checkpoint op")
+		c.log.Error().Err(err).Str("scope", scopeKey).Msg("checkpoint: failed to publish checkpoint op")
 		return
 	}
 
 	c.mu.Lock()
-	c.lastID, c.lastTreeHead = cp.GetCheckpointId(), treeHead
+	c.last[scopeKey] = checkpointState{id: cp.GetCheckpointId(), treeHead: treeHead}
 	c.mu.Unlock()
 
 	c.log.Info().
+		Str("scope", scopeKey).
 		Str("checkpoint_id", cp.GetCheckpointId()).
 		Int("compacted", len(removed)).
 		Str("op_id", env.GetOpId()).

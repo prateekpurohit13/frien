@@ -2,6 +2,7 @@ package scope
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -83,6 +84,17 @@ func NewRouter(nodeZone string, extraZones ...string) *Router {
 		sub[z] = true
 	}
 	return &Router{nodeZone: nodeZone, subscribed: sub}
+}
+
+// SubscribedZones returns the zone names this node replicates, sorted for
+// determinism -- its own zone plus any extra zones an aggregator carries.
+func (r *Router) SubscribedZones() []string {
+	out := make([]string, 0, len(r.subscribed))
+	for z := range r.subscribed {
+		out = append(out, z)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Replicates reports whether this node stores ops of the given scope at all.

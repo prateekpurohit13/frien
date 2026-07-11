@@ -158,14 +158,27 @@ func (s *OpSet) addLocked(env *frienv1.OperationEnvelope, maxPerScope int) (AddR
 	return AddResult{Added: true, Equivocation: proof}, nil
 }
 
-// CompactBelow removes the bulky envelope and scope-index entry for any op
-// whose (node_id, seq) is at or below cuts[node_id], freeing the memory a
-// long-lived or high-churn mesh would otherwise hold forever. An origin
-// absent from cuts is left entirely untouched -- no safe cut is known for it
-// yet, which is the conservative default. It returns exactly the envelopes
-// removed (sorted by op_id), so the caller can build a checkpoint's tree_head
-// from precisely the ops a given cut retired, computed in the same locked
-// pass rather than via a separate read that could race with a concurrent add.
+// CompactBelow removes the bulky envelope and scope-index entry for any op in
+// scopeKey whose (node_id, seq) is at or below cuts[node_id], freeing the
+// memory a long-lived or high-churn mesh would otherwise hold forever. An
+// origin absent from cuts is left entirely untouched -- no safe cut is known
+// for it yet, which is the conservative default. It returns exactly the
+// envelopes removed (sorted by op_id), so the caller can build a checkpoint's
+// tree_head from precisely the ops a given cut retired, computed in the same
+// locked pass rather than via a separate read that could race with a
+// concurrent add.
+//
+// Filtering by scopeKey is load-bearing, not cosmetic: a node's seq counter
+// is global across every scope it publishes into (see LastOpIDInScope), so
+// two different scopes' cuts for the same origin are computed from disjoint
+// evidence -- a zone's SafeFloor is only ever confirmed by that zone's own
+// peers, never by the wider fleet. Without the scope filter, compacting past
+// a zone-confirmed cut would also delete that same origin's *fleet*-scoped
+// ops sharing the low end of its seq range, even though no fleet peer ever
+// confirmed holding them -- a real resurrection/data-loss vector once more
+// than one scope is ever compacted for the same origin (see
+// internal/checkpoint's Compactor, which now compacts a zone alongside
+// fleet).
 //
 // Two things are deliberately never removed:
 //   - seqIndex entries (node_id -> seq -> op_id), which stay forever as a tiny
@@ -176,14 +189,19 @@ func (s *OpSet) addLocked(env *frienv1.OperationEnvelope, maxPerScope int) (AddR
 //     for audit and revocation even once its seq is below the safe cut.
 //
 // The caller (internal/checkpoint) is responsible for only ever advancing
-// cuts to a value every currently-live peer has itself acknowledged holding;
-// CompactBelow performs no such check itself, trusting its input.
-func (s *OpSet) CompactBelow(cuts map[string]uint64) []*frienv1.OperationEnvelope {
+// cuts to a value every currently-live peer that replicates scopeKey has
+// itself acknowledged holding; CompactBelow performs no such check itself,
+// trusting its input.
+func (s *OpSet) CompactBelow(scopeKey string, cuts map[string]uint64) []*frienv1.OperationEnvelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var removed []*frienv1.OperationEnvelope
-	for id, env := range s.ops {
+	for id := range s.scopeIndex[scopeKey] {
+		env := s.ops[id]
+		if env == nil {
+			continue
+		}
 		cut, ok := cuts[env.GetNodeId()]
 		if !ok || env.GetSeq() > cut {
 			continue
