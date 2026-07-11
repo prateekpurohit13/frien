@@ -29,6 +29,7 @@ const (
 type AddResult struct {
 	Added        bool
 	Duplicate    bool                      // op_id already present; idempotent no-op
+	Buffered     bool                      // parked awaiting an unseen parent; see dag.go
 	Equivocation *frienv1.MisbehaviorProof // set when this op forks an existing (node_id, seq)
 }
 
@@ -44,6 +45,10 @@ type OpSet struct {
 	scopeIndex  map[string]map[string]struct{} // scope key -> set of op_id
 	opScope     map[string]string              // op_id -> the scope key it was indexed under
 	equivocated map[string]struct{}            // op_id -> present if it is part of a detected fork; never compacted
+	compacted   map[string]struct{}            // op_id -> present if removed by CompactBelow (kept forever, see dag.go)
+
+	pendingByParent map[string][]*frienv1.OperationEnvelope // parent op_id -> envelopes waiting on it (see dag.go)
+	pendingCount    int
 }
 
 func NewOpSet() *OpSet {
@@ -53,6 +58,7 @@ func NewOpSet() *OpSet {
 		scopeIndex:  make(map[string]map[string]struct{}),
 		opScope:     make(map[string]string),
 		equivocated: make(map[string]struct{}),
+		compacted:   make(map[string]struct{}),
 	}
 }
 
@@ -68,19 +74,48 @@ func (s *OpSet) Add(env *frienv1.OperationEnvelope) (AddResult, error) {
 // an existing (node_id, seq) with a different op_id is equivocation, still stored
 // so the evidence is preserved and a proof returned.
 func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (AddResult, error) {
+	res, _, err := s.addWithLimitAndDrain(env, maxPerScope)
+	return res, err
+}
+
+// AddWithLimitAndDrain behaves like AddWithLimit but also returns any
+// envelopes that were themselves unblocked and admitted as a side effect of
+// this call (buffered earlier awaiting env as a parent, see dag.go). Callers
+// that must run per-admission side effects for every op that actually enters
+// the set -- gossip.Engine.ingest applying a revocation or recording a
+// watermark -- need these: a drain-admitted op is inserted deep inside this
+// call, not the one that originally buffered it, so it never surfaces
+// otherwise.
+func (s *OpSet) AddWithLimitAndDrain(env *frienv1.OperationEnvelope, maxPerScope int) (AddResult, []DrainResult, error) {
+	return s.addWithLimitAndDrain(env, maxPerScope)
+}
+
+func (s *OpSet) addWithLimitAndDrain(env *frienv1.OperationEnvelope, maxPerScope int) (AddResult, []DrainResult, error) {
 	if env == nil {
-		return AddResult{}, fmt.Errorf("crdt: nil envelope")
+		return AddResult{}, nil, fmt.Errorf("crdt: nil envelope")
 	}
 	if env.GetOpId() == "" {
-		return AddResult{}, fmt.Errorf("crdt: envelope missing op_id")
+		return AddResult{}, nil, fmt.Errorf("crdt: envelope missing op_id")
 	}
 	if env.GetNodeId() == "" {
-		return AddResult{}, fmt.Errorf("crdt: envelope %s missing node_id", env.GetOpId())
+		return AddResult{}, nil, fmt.Errorf("crdt: envelope %s missing node_id", env.GetOpId())
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	res, err := s.addLocked(env, maxPerScope)
+	var drained []DrainResult
+	if err == nil && res.Added {
+		drained = s.drainPending(env.GetOpId(), maxPerScope)
+	}
+	return res, drained, err
+}
+
+// addLocked performs one admission attempt. It assumes the caller holds the
+// write lock. Callers are addLocked itself (via drainPending, recursively
+// unblocking a chain of parent-waiting envelopes) and AddWithLimit.
+func (s *OpSet) addLocked(env *frienv1.OperationEnvelope, maxPerScope int) (AddResult, error) {
 	if _, ok := s.ops[env.GetOpId()]; ok {
 		return AddResult{Duplicate: true}, nil
 	}
@@ -96,6 +131,15 @@ func (s *OpSet) AddWithLimit(env *frienv1.OperationEnvelope, maxPerScope int) (A
 	}
 	if maxPerScope > 0 && len(s.scopeIndex[s.scopeOf(env)]) >= maxPerScope {
 		return AddResult{}, ErrScopeFull
+	}
+	// A causal parent this replica has never seen and never compacted means
+	// the op's history can't yet be verified; park it rather than admitting
+	// it blind. See maxPendingParents for the fail-open bound.
+	if !s.parentsSatisfied(env) {
+		if s.pendingCount < maxPendingParents {
+			s.bufferPending(env)
+			return AddResult{Buffered: true}, nil
+		}
 	}
 
 	proof := s.detectEquivocation(env)
@@ -149,6 +193,7 @@ func (s *OpSet) CompactBelow(cuts map[string]uint64) []*frienv1.OperationEnvelop
 		}
 		delete(s.ops, id)
 		s.unindexScope(id)
+		s.compacted[id] = struct{}{}
 		removed = append(removed, env)
 	}
 	sort.Slice(removed, func(i, j int) bool { return removed[i].GetOpId() < removed[j].GetOpId() })

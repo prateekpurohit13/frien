@@ -238,6 +238,14 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 		Payload:      body,
 		SignedBy:     "node",
 	}
+	// A self-chain, kept within this scope (see LastOpIDInScope for why it
+	// must not cross scopes): each op names the publishing node's own
+	// immediately prior op in the same scope as its causal parent, giving
+	// every node's per-scope history tamper-evidence. The first op a node
+	// ever publishes into a scope has no parent.
+	if last, ok := e.set.LastOpIDInScope(e.cfg.NodeID, scopeKey); ok {
+		env.Parents = []string{last}
+	}
 	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, err := e.signer.Sign(msg)
 	if err != nil {
@@ -481,26 +489,48 @@ func (e *Engine) ingest(env *frienv1.OperationEnvelope) error {
 	if _, err := e.clock.Update(ts); err != nil {
 		return err
 	}
-	res, err := e.set.AddWithLimit(env, e.cfg.MaxOpsPerScope)
+	res, drained, err := e.set.AddWithLimitAndDrain(env, e.cfg.MaxOpsPerScope)
 	if err != nil {
 		if errors.Is(err, crdt.ErrScopeFull) {
 			e.log.Warn().Str("scope", crdt.EnvelopeScope(env).String()).Str("op", env.GetOpId()).Msg("op rejected: scope at capacity")
 		}
 		return err
 	}
+	if res.Buffered {
+		e.log.Debug().Str("node", env.GetNodeId()).Str("op", env.GetOpId()).Msg("op held back: causal parent not yet known")
+		return nil
+	}
+	e.admitted(env, ts, res.Equivocation)
+	// Any envelope unblocked by this admission (buffered earlier awaiting env
+	// as a parent) is inserted deep inside AddWithLimitAndDrain, not through
+	// ingest's own call -- replay the same per-admission side effects here or
+	// a drain-admitted revocation would never actually apply.
+	for _, d := range drained {
+		dts, err := crdt.ParseTimestamp(d.Env.GetHlc())
+		if err != nil {
+			continue // already validated once before being buffered; not expected
+		}
+		e.admitted(d.Env, dts, d.Equivocation)
+	}
+	return nil
+}
+
+// admitted runs the side effects that must happen exactly once for every
+// envelope that actually enters the local set, whether admitted directly by
+// ingest or unblocked later as a drained parent-waiter (see ingest).
+func (e *Engine) admitted(env *frienv1.OperationEnvelope, ts crdt.Timestamp, equivocation *frienv1.MisbehaviorProof) {
 	if env.GetOpType() == crdt.OpRevocation {
 		e.applyRevocation(env)
 	}
 	e.recordWatermark(env.GetNodeId(), ts)
-	if res.Equivocation != nil {
-		crdt.StampAttribution(res.Equivocation, e.cfg.NodeID, time.Now())
+	if equivocation != nil {
+		crdt.StampAttribution(equivocation, e.cfg.NodeID, time.Now())
 		e.log.Warn().
 			Str("offender", env.GetNodeId()).
 			Uint64("seq", env.GetSeq()).
-			Str("proof_id", res.Equivocation.GetId()).
+			Str("proof_id", equivocation.GetId()).
 			Msg("equivocation detected")
 	}
-	return nil
 }
 
 // applyRevocation unmarshals and applies a revocation op's payload. By the
