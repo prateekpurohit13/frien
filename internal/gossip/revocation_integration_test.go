@@ -65,10 +65,17 @@ func revocationEnvelope(t *testing.T, rec *frienv1.RevocationRecord, opSigner *i
 	env := &frienv1.OperationEnvelope{
 		ProtoVersion: 1, OpId: "rev_op_" + rec.GetId(), OpType: crdt.OpRevocation,
 		NodeId: "operator", Hlc: ts.String(), Seq: seq,
+		// ScopeSeq must start at 1 like a real per-scope counter would (0 is
+		// the sentinel "nothing held yet" watermark value -- an op actually
+		// carrying scope_seq 0 is indistinguishable from "already covered" to
+		// a peer that has never seen this origin, and gets skipped by
+		// MissingInRange instead of propagated). Mirrors Seq since each test
+		// here only ever injects one op under this pseudo node_id.
+		ScopeSeq:    seq,
 		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]), Payload: body,
-		SignedBy: "operator",
+		SignedBy:    "operator",
 	}
-	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, err := opSigner.Sign(msg)
 	if err != nil {
 		t.Fatalf("sign envelope: %v", err)
@@ -174,7 +181,7 @@ func TestRevocationRejectsNonOperatorEnvelope(t *testing.T) {
 		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]), Payload: body,
 		SignedBy: "node", // NOT "operator" -- forged attempt to smuggle a revocation as a node op
 	}
-	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, _ := nodeSigner.Sign(msg)
 	env.KeyId = nodeSigner.PublicKeyID()
 	env.Signature = sig

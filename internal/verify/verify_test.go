@@ -17,7 +17,7 @@ func signedEnv(t *testing.T, signer *identity.Ed25519Signer, nodeID, signedBy st
 		Hlc: "1-0-" + nodeID, Seq: 1, PayloadHash: "sha256:x", SignedBy: signedBy,
 		KeyId: signer.PublicKeyID(),
 	}
-	msg := identity.CanonicalSignedContent(env.ProtoVersion, env.OpId, env.OpType, env.NodeId, env.Hlc, env.Seq, env.Parents, env.PayloadHash, env.SignedBy)
+	msg := identity.CanonicalSignedContent(env.ProtoVersion, env.OpId, env.OpType, env.NodeId, env.Hlc, env.Seq, env.ScopeSeq, env.Parents, env.PayloadHash, env.SignedBy)
 	sig, err := signer.Sign(msg)
 	if err != nil {
 		t.Fatalf("sign: %v", err)

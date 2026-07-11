@@ -110,7 +110,7 @@ func (v *Verifier) Verify(env *frienv1.OperationEnvelope) error {
 
 	msg := identity.CanonicalSignedContent(
 		env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(),
-		env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy(),
+		env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy(),
 	)
 	if _, err := identity.Verify(msg, env.GetKeyId(), env.GetSignature(), pub, "", nil, nil); err != nil {
 		return fmt.Errorf("verify: %w", err)

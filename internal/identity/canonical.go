@@ -13,7 +13,7 @@ import (
 //
 // Fields included (in order):
 //
-//	proto_version | op_id | op_type | node_id | hlc | seq | parents_hash | payload_hash | signed_by
+//	proto_version | op_id | op_type | node_id | hlc | seq | scope_seq | parents_hash | payload_hash | signed_by
 //
 // Fields excluded: signature, pqc_signature, pqc_algorithm, pqc_key_id, key_id, payload.
 // payload is excluded because it is already committed to via payload_hash.
@@ -25,6 +25,7 @@ func CanonicalSignedContent(
 	protoVersion uint32,
 	opID, opType, nodeID, hlc string,
 	seq uint64,
+	scopeSeq uint64,
 	parents []string,
 	payloadHash string,
 	signedBy string,
@@ -41,6 +42,8 @@ func CanonicalSignedContent(
 
 	var u64 [8]byte
 	binary.BigEndian.PutUint64(u64[:], seq)
+	h.Write(u64[:])
+	binary.BigEndian.PutUint64(u64[:], scopeSeq)
 	h.Write(u64[:])
 
 	// Parents: sort is not required here because callers must pass parents in

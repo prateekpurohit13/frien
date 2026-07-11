@@ -109,6 +109,9 @@ type Engine struct {
 
 	seq atomic.Uint64
 
+	scopeSeqMu sync.Mutex
+	scopeSeqs  map[string]uint64 // scope key -> this node's next scope_seq to hand out
+
 	mu        sync.Mutex
 	watermark map[string]crdt.Timestamp
 
@@ -276,6 +279,22 @@ func (e *Engine) Watermarks() map[string]crdt.Timestamp {
 	return out
 }
 
+// nextScopeSeq hands out this node's next scope_seq for scopeKey: a counter
+// distinct from the global per-node seq, starting at 1 and incrementing only
+// for that scope. crdt.OpSet.ScopeState relies on this being genuinely
+// contiguous per scope -- unlike seq, which is shared across every scope a
+// node publishes into and therefore cannot serve as a per-scope compaction
+// watermark once a node interleaves scopes (see ScopeState's doc comment).
+func (e *Engine) nextScopeSeq(scopeKey string) uint64 {
+	e.scopeSeqMu.Lock()
+	defer e.scopeSeqMu.Unlock()
+	if e.scopeSeqs == nil {
+		e.scopeSeqs = make(map[string]uint64)
+	}
+	e.scopeSeqs[scopeKey]++
+	return e.scopeSeqs[scopeKey]
+}
+
 // Publish creates a locally-originated op, stamps it with a fresh HLC and the
 // node's next sequence number, signs it with the node's identity key, and adds
 // it to the local set.
@@ -299,6 +318,7 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 		NodeId:       e.cfg.NodeID,
 		Hlc:          e.clock.Now().String(),
 		Seq:          e.seq.Add(1),
+		ScopeSeq:     e.nextScopeSeq(scopeKey),
 		PayloadHash:  "sha256:" + hex.EncodeToString(sum[:]),
 		Payload:      body,
 		SignedBy:     "node",
@@ -311,7 +331,7 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 	if last, ok := e.set.LastOpIDInScope(e.cfg.NodeID, scopeKey); ok {
 		env.Parents = []string{last}
 	}
-	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, err := e.signer.Sign(msg)
 	if err != nil {
 		return nil, fmt.Errorf("gossip: signing op %s: %w", opID, err)

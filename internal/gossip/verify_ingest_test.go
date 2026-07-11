@@ -97,7 +97,7 @@ func TestIngestRejectsTamperedPayload(t *testing.T) {
 // (node_id, seq) -- something Engine.Publish's own atomic counter never does,
 // but which another node's compromised or buggy client legitimately could.
 func signEnvelope(eng *Engine, env *frienv1.OperationEnvelope) *frienv1.OperationEnvelope {
-	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, _ := eng.signer.Sign(msg)
 	env.KeyId = eng.signer.PublicKeyID()
 	env.Signature = sig

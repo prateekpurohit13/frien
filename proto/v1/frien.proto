@@ -79,6 +79,10 @@ message OperationEnvelope {
   string          pqc_algorithm = 13; // "ml-dsa-65" | "" (absent if sender does not support PQC)
   string          pqc_key_id    = 14; // fingerprint of sender's ML-DSA public key
   bytes           pqc_signature = 15; // ML-DSA-65 signature (3309 bytes)
+  uint64          scope_seq     = 16; // monotonic per-(node, scope) sequence, distinct from the
+                                       // per-node `seq` above; see internal/crdt's ScopeState doc
+                                       // comment for why compaction watermarks need this separate
+                                       // counter instead of a scope-filtered view of `seq`.
 }
 
 message ThreatRecord {

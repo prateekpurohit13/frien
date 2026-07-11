@@ -13,7 +13,9 @@ import (
 
 func fleetEnv(id string, seq uint64) *frienv1.OperationEnvelope {
 	return &frienv1.OperationEnvelope{
-		OpId: id, OpType: crdt.OpCheckpoint, NodeId: "n", Seq: seq,
+		// ScopeSeq mirrors Seq: every envelope here is unscoped (default
+		// fleet) and shares node "n", so the two counters coincide 1:1.
+		OpId: id, OpType: crdt.OpCheckpoint, NodeId: "n", Seq: seq, ScopeSeq: seq,
 		PayloadHash: "sha256:x", Payload: []byte(id),
 	}
 }

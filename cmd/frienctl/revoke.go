@@ -179,11 +179,15 @@ func signOperatorEnvelope(opType string, payload []byte, signer *identity.Ed2551
 		NodeId:       pseudoNode,
 		Hlc:          crdt.Timestamp{Wall: now.UnixMilli(), NodeID: pseudoNode}.String(),
 		Seq:          binary.BigEndian.Uint64(seqBuf[:]),
-		PayloadHash:  "sha256:" + hex.EncodeToString(sum[:]),
-		Payload:      payload,
-		SignedBy:     "operator",
+		// This pseudo-node identity is freshly random and never reused (see
+		// above), so it never needs a real per-scope chain -- 1 is simply "the
+		// only op this identity ever publishes."
+		ScopeSeq:    1,
+		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]),
+		Payload:     payload,
+		SignedBy:    "operator",
 	}
-	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
+	msg := identity.CanonicalSignedContent(env.GetProtoVersion(), env.GetOpId(), env.GetOpType(), env.GetNodeId(), env.GetHlc(), env.GetSeq(), env.GetScopeSeq(), env.GetParents(), env.GetPayloadHash(), env.GetSignedBy())
 	sig, err := signer.Sign(msg)
 	if err != nil {
 		return nil, fmt.Errorf("signing envelope: %w", err)

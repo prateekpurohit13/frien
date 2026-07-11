@@ -349,25 +349,45 @@ Two of Phase 4's four scope decisions closed in a follow-up pass:
 
 All four Phase 4 scope decisions are now closed as of 2026-07-11.
 
-- **Found and documented, deliberately not fixed**: `crdt.OpSet.ScopeState`'s
-  contiguous-watermark computation filters a node's seq history down to one scope, then
-  requires literal `seq == watermark+1` contiguity *within that filtered subsequence*.
-  Since the underlying seq counter is global across every scope a node publishes into
-  (not per-scope), a single origin that itself interleaves scopes — most concretely, its
-  own zone detections interleaved with its own periodic `internal/checkpoint` publishes,
-  since every node runs the Compactor — can stall that scope's watermark indefinitely
-  (it never advances past 0), which blocks that scope's compaction from ever becoming
-  safe for that origin without over- or under-compacting. A "global full-node-history
-  contiguity" alternative was tried and rejected: it fixes the single-origin case but
-  breaks the *cross-peer* case instead (an out-of-zone peer that never receives that
-  origin's zone ops at all would see a permanent contiguity gap and get stuck computing
-  even the *fleet* watermark for that origin). The clean fix is a second, genuinely
-  per-(node, scope) sequence number carried alongside the existing global one, with
-  `ScopeState`/`MissingInRange`/`CompactBelow`'s cut comparison all switched to it — a
-  wire-format change with enough surface area (proto field, `Publish`'s per-scope
-  counter, every scope-partitioned watermark consumer) that it did not fit this pass.
-  `internal/checkpoint`'s `Compactor` and this doc are the two places that reference it;
-  revisit alongside any other wire-format change.
+### Scope-seq follow-up (2026-07-11, later the same day): the interleaved-scope watermark stall — now fixed
+The item above was originally shipped as "found and documented, deliberately not
+fixed." The user asked for it to be closed properly before Phase 5, so it was:
+- [x] `OperationEnvelope.scope_seq` (proto field 16) — a second per-node counter,
+      distinct from the existing global `seq`, assigned per (node, scope) and covered by
+      the envelope signature (`identity.CanonicalSignedContent` now takes it).
+      `gossip.Engine.nextScopeSeq` hands these out starting at 1 per scope key; `seq`
+      itself is unchanged and still backs equivocation detection, which stays
+      global-per-node by design (a fork is a fork regardless of scope).
+- [x] `crdt.OpSet.scopeSeqIndex` (scope → node → scope_seq → op_id, kept forever
+      alongside `seqIndex`) — `indexScope` populates it; `ScopeState`'s contiguous
+      watermark now scans this instead of the old scope-filtered view of `seqIndex`, so
+      it's genuinely contiguous per scope regardless of what else that node published in
+      between. `MissingInRange`'s watermark comparison and gap-fill ordering, and
+      `CompactBelow`'s cut comparison, all switched from the envelope's global `seq` to
+      `scope_seq` accordingly. Equivocation-sibling detection (the watermark-bypass for
+      forked ops) stays keyed on global `seq`, unchanged — that's a different concern
+      than watermark contiguity.
+- [x] Proven at three levels: `crdt.TestScopeStateAdvancesDespiteInterleavedScopes`
+      (OpSet layer, hand-built interleaved envelopes),
+      `checkpoint.TestCompactorHandlesInterleavedScopesFromSingleOrigin` (whole
+      Compactor, both scopes actually compact from one interleaved origin), and the full
+      existing suite (`gossip.TestRevocationInjectPropagatesAndAppliesLocally` and the
+      anti-entropy range-sync tests) re-validated against the new scope_seq-based
+      watermark path — all green under `go test -race ./...`.
+- **Rejected alternative, for the record**: a "global full-node-history contiguity"
+  version was tried first and reverted — it fixes the single-origin interleaving case
+  but breaks the cross-peer case instead (an out-of-zone peer that never receives that
+  origin's zone ops sees a permanent gap and gets stuck computing even the *fleet*
+  watermark for that origin). scope_seq as a genuinely separate counter is what avoids
+  that trade-off.
+- **Found while fixing this**: `scope_seq == 0` is a reserved sentinel (the same
+  "nothing held yet" default `ScopeState` returns for an origin it has never observed),
+  so a real op must never carry it — `nextScopeSeq` starts at 1 by construction, and one
+  test helper that defaulted to 0 (`revocation_integration_test.go`) silently failed to
+  converge via anti-entropy until fixed. Not a production-reachable bug (only
+  hand-constructed envelopes can hit it), but worth knowing if a future admin/injection
+  path ever constructs envelopes by hand again (see `cmd/frienctl/revoke.go`, which
+  already sets `ScopeSeq: 1` for exactly this reason).
 
 ---
 

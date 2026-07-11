@@ -11,19 +11,22 @@ pattern and the rationale, not the source.
 
 Last updated: 2026-07-11. Phase 1-3 hardening and Phase 4 (tamper-evidence, compaction,
 revocation) are both complete; see `docs/task-checklist.md`'s Phase 4 section for the
-authoritative list of what shipped. Of Phase 4's four originally-deferred scope
-decisions, two are now closed in a follow-up pass the same day: Merkle DAG/parents
-causal tracking (per-scope self-chain + parent-gated admission + checkpoint-anchored
-root-hash exchange) and zone-scope compaction (peer-zone membership metadata +
-scope-keyed SafeFloor). See `docs/task-checklist.md`'s "Phase 4 follow-up" section for
-what shipped, including one real, non-obvious bug this pass found and fixed
-(`crdt.OpSet.CompactBelow` was not scope-filtered, so a zone-confirmed cut could delete
-a different scope's unconfirmed data from the same origin) and one it found and
-documented but did not fix (a single origin interleaving scopes in its own seq counter
-can stall that scope's compaction watermark -- needs a per-scope sequence number, a
-wire-format change out of scope for this pass). The remaining two (an operator CLI/RPC
-to inject revocations/checkpoints, and CA/trust-bundle overlap-window rotation) and
-Phase 5 (policy/quorum/enforcement) are still open.
+authoritative list of what shipped. All four of Phase 4's originally-deferred scope
+decisions are now closed, in two follow-up passes the same day: Merkle DAG/parents
+causal tracking, zone-scope compaction, an operator CLI/RPC to inject
+revocations/checkpoints, and CA/trust-bundle overlap-window rotation. See
+`docs/task-checklist.md`'s "Phase 4 follow-up" section for what shipped, including two
+real, non-obvious bugs found and fixed (`crdt.OpSet.CompactBelow` was not
+scope-filtered, so a zone-confirmed cut could delete a different scope's unconfirmed
+data from the same origin; and a single origin interleaving scopes in its own seq
+counter could stall that scope's compaction watermark indefinitely). The second bug was
+initially shipped as "found and documented, not fixed" (it needed a wire-format
+change), then closed the same day in a follow-up: `OperationEnvelope.scope_seq`, a
+second per-(node, scope) counter alongside the existing global `seq`, is what
+`ScopeState`/`MissingInRange`/`CompactBelow` now key their watermark logic on -- see
+that section for the full account, including a rejected alternative fix and a sharp
+edge (`scope_seq == 0` is a reserved sentinel) found along the way. Phase 5
+(policy/quorum/enforcement) has not started.
 
 ## Implementation status
 

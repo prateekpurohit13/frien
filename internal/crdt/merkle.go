@@ -55,7 +55,9 @@ func (s *OpSet) scopeOf(env *frienv1.OperationEnvelope) string {
 // indexScope records env under its scope, and remembers which scope it landed
 // in (opScope) so a later removal does not need to recompute scopeOf -- which
 // would give the wrong answer for a retraction once its target has itself
-// already been removed. It assumes the write lock is held.
+// already been removed. It also records env's scope_seq in scopeSeqIndex (see
+// that field's doc comment) for the same reason recordSeq maintains seqIndex.
+// It assumes the write lock is held.
 func (s *OpSet) indexScope(env *frienv1.OperationEnvelope) {
 	sc := s.scopeOf(env)
 	set := s.scopeIndex[sc]
@@ -65,13 +67,31 @@ func (s *OpSet) indexScope(env *frienv1.OperationEnvelope) {
 	}
 	set[env.GetOpId()] = struct{}{}
 	s.opScope[env.GetOpId()] = sc
+
+	byNode := s.scopeSeqIndex[sc]
+	if byNode == nil {
+		byNode = make(map[string]map[uint64]string)
+		s.scopeSeqIndex[sc] = byNode
+	}
+	byScopeSeq := byNode[env.GetNodeId()]
+	if byScopeSeq == nil {
+		byScopeSeq = make(map[uint64]string)
+		byNode[env.GetNodeId()] = byScopeSeq
+	}
+	if _, ok := byScopeSeq[env.GetScopeSeq()]; !ok {
+		byScopeSeq[env.GetScopeSeq()] = env.GetOpId()
+	}
 }
 
 // unindexScope removes id from the live per-scope set. opScope itself is kept
-// forever as a tombstone alongside seqIndex: ScopeState needs it to know which
-// scope a compacted (now-gone) seq belonged to, so the contiguous watermark
-// can keep advancing across a compacted region instead of seeing a gap where
-// removed ops used to be. It assumes the write lock is held.
+// forever as a tombstone alongside seqIndex: LastOpIDInScope needs it to
+// resolve which scope a compacted (now-gone) op belonged to when scanning a
+// node's global seq history, and parentsSatisfied needs it (via the
+// compacted set) to recognize a parent that was legitimately compacted away
+// rather than never seen. scopeSeqIndex, not opScope, is what lets
+// ScopeState's contiguous watermark see through a compacted region -- it is
+// never touched here, by design (see CompactBelow). It assumes the write
+// lock is held.
 func (s *OpSet) unindexScope(id string) {
 	if sc, ok := s.opScope[id]; ok {
 		delete(s.scopeIndex[sc], id)

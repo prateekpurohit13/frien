@@ -10,7 +10,7 @@ import (
 func canonical() []byte {
 	return identity.CanonicalSignedContent(
 		1, "op_01TEST", "threat_record", "node-sf",
-		"2026-06-14T03:14:22.000Z-1-node-sf", 42,
+		"2026-06-14T03:14:22.000Z-1-node-sf", 42, 7,
 		[]string{"sha256:abc", "sha256:def"},
 		"sha256:payloadhash",
 		"node",
@@ -31,7 +31,7 @@ func TestCanonical_DifferentFields_DifferentOutput(t *testing.T) {
 	base := canonical()
 	changed := identity.CanonicalSignedContent(
 		1, "op_01OTHER", "threat_record", "node-sf",
-		"2026-06-14T03:14:22.000Z-1-node-sf", 42,
+		"2026-06-14T03:14:22.000Z-1-node-sf", 42, 7,
 		[]string{"sha256:abc", "sha256:def"},
 		"sha256:payloadhash",
 		"node",
@@ -43,9 +43,9 @@ func TestCanonical_DifferentFields_DifferentOutput(t *testing.T) {
 
 func TestCanonical_ParentOrderMatters(t *testing.T) {
 	// Causal order must be preserved — reordering parents changes the canonical bytes.
-	a := identity.CanonicalSignedContent(1, "op", "t", "n", "hlc", 1,
+	a := identity.CanonicalSignedContent(1, "op", "t", "n", "hlc", 1, 1,
 		[]string{"sha256:aaa", "sha256:bbb"}, "ph", "node")
-	b := identity.CanonicalSignedContent(1, "op", "t", "n", "hlc", 1,
+	b := identity.CanonicalSignedContent(1, "op", "t", "n", "hlc", 1, 1,
 		[]string{"sha256:bbb", "sha256:aaa"}, "ph", "node")
 	if string(a) == string(b) {
 		t.Error("parent order should affect canonical bytes")

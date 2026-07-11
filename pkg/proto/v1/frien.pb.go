@@ -47,6 +47,7 @@ type OperationEnvelope struct {
 	PqcAlgorithm  string `protobuf:"bytes,13,opt,name=pqc_algorithm,json=pqcAlgorithm,proto3" json:"pqc_algorithm,omitempty"` // "ml-dsa-65" | "" (absent if sender does not support PQC)
 	PqcKeyId      string `protobuf:"bytes,14,opt,name=pqc_key_id,json=pqcKeyId,proto3" json:"pqc_key_id,omitempty"`           // fingerprint of sender's ML-DSA public key
 	PqcSignature  []byte `protobuf:"bytes,15,opt,name=pqc_signature,json=pqcSignature,proto3" json:"pqc_signature,omitempty"` // ML-DSA-65 signature (3309 bytes)
+	ScopeSeq      uint64 `protobuf:"varint,16,opt,name=scope_seq,json=scopeSeq,proto3" json:"scope_seq,omitempty"`            // monotonic per-(node, scope) sequence, distinct from the
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -184,6 +185,13 @@ func (x *OperationEnvelope) GetPqcSignature() []byte {
 		return x.PqcSignature
 	}
 	return nil
+}
+
+func (x *OperationEnvelope) GetScopeSeq() uint64 {
+	if x != nil {
+		return x.ScopeSeq
+	}
+	return 0
 }
 
 type ThreatRecord struct {
@@ -3215,7 +3223,7 @@ var File_frien_proto protoreflect.FileDescriptor
 
 const file_frien_proto_rawDesc = "" +
 	"\n" +
-	"\vfrien.proto\x12\bfrien.v1\"\xb4\x03\n" +
+	"\vfrien.proto\x12\bfrien.v1\"\xd1\x03\n" +
 	"\x11OperationEnvelope\x12#\n" +
 	"\rproto_version\x18\x01 \x01(\rR\fprotoVersion\x12\x13\n" +
 	"\x05op_id\x18\x02 \x01(\tR\x04opId\x12\x17\n" +
@@ -3233,7 +3241,8 @@ const file_frien_proto_rawDesc = "" +
 	"\rpqc_algorithm\x18\r \x01(\tR\fpqcAlgorithm\x12\x1c\n" +
 	"\n" +
 	"pqc_key_id\x18\x0e \x01(\tR\bpqcKeyId\x12#\n" +
-	"\rpqc_signature\x18\x0f \x01(\fR\fpqcSignature\"\xa8\x03\n" +
+	"\rpqc_signature\x18\x0f \x01(\fR\fpqcSignature\x12\x1b\n" +
+	"\tscope_seq\x18\x10 \x01(\x04R\bscopeSeq\"\xa8\x03\n" +
 	"\fThreatRecord\x12%\n" +
 	"\x0eindicator_type\x18\x01 \x01(\tR\rindicatorType\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12\x1c\n" +

@@ -39,13 +39,14 @@ type AddResult struct {
 // without coordination. Expiry, retraction, and quorum are projections over the
 // set (see project.go), not part of the merge.
 type OpSet struct {
-	mu          sync.RWMutex
-	ops         map[string]*frienv1.OperationEnvelope
-	seqIndex    map[string]map[uint64]string   // node_id -> seq -> first op_id ever seen (kept forever, see CompactBelow)
-	scopeIndex  map[string]map[string]struct{} // scope key -> set of op_id
-	opScope     map[string]string              // op_id -> the scope key it was indexed under
-	equivocated map[string]struct{}            // op_id -> present if it is part of a detected fork; never compacted
-	compacted   map[string]struct{}            // op_id -> present if removed by CompactBelow (kept forever, see dag.go)
+	mu            sync.RWMutex
+	ops           map[string]*frienv1.OperationEnvelope
+	seqIndex      map[string]map[uint64]string            // node_id -> seq -> first op_id ever seen (kept forever, see CompactBelow)
+	scopeSeqIndex map[string]map[string]map[uint64]string // scope_key -> node_id -> scope_seq -> first op_id ever seen (kept forever; see ScopeState)
+	scopeIndex    map[string]map[string]struct{}          // scope key -> set of op_id
+	opScope       map[string]string                       // op_id -> the scope key it was indexed under
+	equivocated   map[string]struct{}                     // op_id -> present if it is part of a detected fork; never compacted
+	compacted     map[string]struct{}                     // op_id -> present if removed by CompactBelow (kept forever, see dag.go)
 
 	pendingByParent map[string][]*frienv1.OperationEnvelope // parent op_id -> envelopes waiting on it (see dag.go)
 	pendingCount    int
@@ -53,12 +54,13 @@ type OpSet struct {
 
 func NewOpSet() *OpSet {
 	return &OpSet{
-		ops:         make(map[string]*frienv1.OperationEnvelope),
-		seqIndex:    make(map[string]map[uint64]string),
-		scopeIndex:  make(map[string]map[string]struct{}),
-		opScope:     make(map[string]string),
-		equivocated: make(map[string]struct{}),
-		compacted:   make(map[string]struct{}),
+		ops:           make(map[string]*frienv1.OperationEnvelope),
+		seqIndex:      make(map[string]map[uint64]string),
+		scopeSeqIndex: make(map[string]map[string]map[uint64]string),
+		scopeIndex:    make(map[string]map[string]struct{}),
+		opScope:       make(map[string]string),
+		equivocated:   make(map[string]struct{}),
+		compacted:     make(map[string]struct{}),
 	}
 }
 
@@ -159,34 +161,39 @@ func (s *OpSet) addLocked(env *frienv1.OperationEnvelope, maxPerScope int) (AddR
 }
 
 // CompactBelow removes the bulky envelope and scope-index entry for any op in
-// scopeKey whose (node_id, seq) is at or below cuts[node_id], freeing the
-// memory a long-lived or high-churn mesh would otherwise hold forever. An
-// origin absent from cuts is left entirely untouched -- no safe cut is known
-// for it yet, which is the conservative default. It returns exactly the
-// envelopes removed (sorted by op_id), so the caller can build a checkpoint's
-// tree_head from precisely the ops a given cut retired, computed in the same
-// locked pass rather than via a separate read that could race with a
-// concurrent add.
+// scopeKey whose (node_id, scope_seq) is at or below cuts[node_id] (cuts is a
+// scope_seq value, matching what ScopeState/SafeFloor now compute -- see
+// ScopeState's doc comment for why scope_seq rather than the envelope's
+// global seq), freeing the memory a long-lived or high-churn mesh would
+// otherwise hold forever. An origin absent from cuts is left entirely
+// untouched -- no safe cut is known for it yet, which is the conservative
+// default. It returns exactly the envelopes removed (sorted by op_id), so
+// the caller can build a checkpoint's tree_head from precisely the ops a
+// given cut retired, computed in the same locked pass rather than via a
+// separate read that could race with a concurrent add.
 //
-// Filtering by scopeKey is load-bearing, not cosmetic: a node's seq counter
-// is global across every scope it publishes into (see LastOpIDInScope), so
-// two different scopes' cuts for the same origin are computed from disjoint
-// evidence -- a zone's SafeFloor is only ever confirmed by that zone's own
-// peers, never by the wider fleet. Without the scope filter, compacting past
-// a zone-confirmed cut would also delete that same origin's *fleet*-scoped
-// ops sharing the low end of its seq range, even though no fleet peer ever
-// confirmed holding them -- a real resurrection/data-loss vector once more
-// than one scope is ever compacted for the same origin (see
-// internal/checkpoint's Compactor, which now compacts a zone alongside
-// fleet).
+// Filtering by scopeKey is load-bearing, not cosmetic: a node's global seq
+// counter is shared across every scope it publishes into (see
+// LastOpIDInScope), so two different scopes' cuts for the same origin are
+// computed from disjoint evidence -- a zone's SafeFloor is only ever
+// confirmed by that zone's own peers, never by the wider fleet. Without the
+// scope filter (and without scope_seq itself, which makes "below the cut"
+// meaningful per scope in the first place), compacting past a
+// zone-confirmed cut could also delete that same origin's *fleet*-scoped
+// ops, even though no fleet peer ever confirmed holding them -- a real
+// resurrection/data-loss vector once more than one scope is ever compacted
+// for the same origin (see internal/checkpoint's Compactor, which now
+// compacts a zone alongside fleet).
 //
 // Two things are deliberately never removed:
-//   - seqIndex entries (node_id -> seq -> op_id), which stay forever as a tiny
-//     tombstone. Without them, a later op forging the same (node_id, seq)
+//   - seqIndex and scopeSeqIndex entries, which stay forever as tiny
+//     tombstones. Without them, a later op forging the same (node_id, seq)
 //     after its original was compacted would look like a first sighting
-//     instead of equivocation, silently losing the ability to detect it.
+//     instead of equivocation, silently losing the ability to detect it;
+//     scopeSeqIndex is what lets ScopeState's contiguous watermark see
+//     through a compacted region instead of treating it as a permanent gap.
 //   - ops flagged in equivocated, so misbehavior evidence survives compaction
-//     for audit and revocation even once its seq is below the safe cut.
+//     for audit and revocation even once its scope_seq is below the safe cut.
 //
 // The caller (internal/checkpoint) is responsible for only ever advancing
 // cuts to a value every currently-live peer that replicates scopeKey has
@@ -203,7 +210,7 @@ func (s *OpSet) CompactBelow(scopeKey string, cuts map[string]uint64) []*frienv1
 			continue
 		}
 		cut, ok := cuts[env.GetNodeId()]
-		if !ok || env.GetSeq() > cut {
+		if !ok || env.GetScopeSeq() > cut {
 			continue
 		}
 		if _, protected := s.equivocated[id]; protected {

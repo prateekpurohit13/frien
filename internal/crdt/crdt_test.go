@@ -27,7 +27,12 @@ func threatEnv(t *testing.T, opID, nodeID string, seq uint64, expires string) *f
 		t.Fatalf("marshal threat: %v", err)
 	}
 	return &frienv1.OperationEnvelope{
-		OpId: opID, OpType: OpThreatRecord, NodeId: nodeID, Seq: seq,
+		// ScopeSeq mirrors Seq here: every envelope threatEnv builds is
+		// unscoped (defaults to fleet, see scopeOf), so a given node's ops
+		// never interleave scopes in these tests and the two counters
+		// coincide 1:1. Tests that specifically exercise interleaving (see
+		// dag_test.go's cross-scope tests) set ScopeSeq independently.
+		OpId: opID, OpType: OpThreatRecord, NodeId: nodeID, Seq: seq, ScopeSeq: seq,
 		PayloadHash: payloadHash(payload), Payload: payload,
 	}
 }
@@ -39,7 +44,7 @@ func retractionEnv(t *testing.T, opID, nodeID string, seq uint64, target string)
 		t.Fatalf("marshal retraction: %v", err)
 	}
 	return &frienv1.OperationEnvelope{
-		OpId: opID, OpType: OpRetraction, NodeId: nodeID, Seq: seq,
+		OpId: opID, OpType: OpRetraction, NodeId: nodeID, Seq: seq, ScopeSeq: seq,
 		PayloadHash: payloadHash(payload), Payload: payload,
 	}
 }
@@ -235,6 +240,51 @@ func TestScopeStateComputesContiguousWatermark(t *testing.T) {
 	}
 	if len(haveAbove) != 1 || haveAbove[0] != "a5" {
 		t.Fatalf("have_above should be exactly the above-watermark op a5, got %v", haveAbove)
+	}
+}
+
+// TestScopeStateAdvancesDespiteInterleavedScopes reproduces a real bug found
+// and fixed the same day scope_seq was introduced: a node's global seq
+// counter is shared across every scope it publishes into (any node running
+// both a zone detector and internal/checkpoint's Compactor interleaves this
+// way in practice), so filtering seq down to one scope leaves gaps at every
+// position another scope's ops used -- the watermark could never advance
+// past 0 for such a node. scope_seq is assigned per (node, scope), so it
+// stays genuinely contiguous within one scope regardless of what else that
+// node published in between.
+func TestScopeStateAdvancesDespiteInterleavedScopes(t *testing.T) {
+	s := NewOpSet()
+	// node.a's publish order: fleet, zone:eu, fleet, zone:eu, fleet -- global
+	// seq increments every time (1..5), but scope_seq increments only within
+	// its own scope (fleet: 1,2,3; zone:eu: 1,2), exactly as
+	// gossip.Engine.Publish/nextScopeSeq would assign them.
+	addScoped := func(id string, seq, scopeSeq uint64, scopeKey string) {
+		tr := &frienv1.ThreatRecord{Id: id, Indicator: "203.0.113.1", Scope: scopeKey}
+		payload, err := proto.Marshal(tr)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		env := &frienv1.OperationEnvelope{
+			OpId: id, OpType: OpThreatRecord, NodeId: "node.a", Seq: seq, ScopeSeq: scopeSeq,
+			PayloadHash: payloadHash(payload), Payload: payload,
+		}
+		if _, err := s.Add(env); err != nil {
+			t.Fatalf("add %s: %v", id, err)
+		}
+	}
+	addScoped("f1", 1, 1, "fleet")
+	addScoped("z1", 2, 1, "zone:eu")
+	addScoped("f2", 3, 2, "fleet")
+	addScoped("z2", 4, 2, "zone:eu")
+	addScoped("f3", 5, 3, "fleet")
+
+	fleetSeqs, _ := s.ScopeState("fleet")
+	if fleetSeqs["node.a"] != 3 {
+		t.Fatalf("fleet watermark for node.a = %d, want 3 (all three fleet ops contiguous by scope_seq)", fleetSeqs["node.a"])
+	}
+	zoneSeqs, _ := s.ScopeState("zone:eu")
+	if zoneSeqs["node.a"] != 2 {
+		t.Fatalf("zone:eu watermark for node.a = %d, want 2", zoneSeqs["node.a"])
 	}
 }
 

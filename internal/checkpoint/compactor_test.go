@@ -48,7 +48,10 @@ func fleetOp(t *testing.T, opID, nodeID string, seq uint64) *frienv1.OperationEn
 	}
 	sum := sha256.Sum256(body)
 	return &frienv1.OperationEnvelope{
-		OpId: opID, OpType: crdt.OpThreatRecord, NodeId: nodeID, Seq: seq,
+		// ScopeSeq mirrors Seq: each of these helpers' envelopes carries a
+		// single fixed scope, so a given node's ops here never interleave
+		// scopes and the two counters coincide 1:1.
+		OpId: opID, OpType: crdt.OpThreatRecord, NodeId: nodeID, Seq: seq, ScopeSeq: seq,
 		Hlc:         fmt.Sprintf("1700000000000-%d-%s", seq, nodeID),
 		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]), Payload: body,
 	}
@@ -159,7 +162,10 @@ func zoneOp(t *testing.T, opID, nodeID string, seq uint64, zoneScope string) *fr
 	}
 	sum := sha256.Sum256(body)
 	return &frienv1.OperationEnvelope{
-		OpId: opID, OpType: crdt.OpThreatRecord, NodeId: nodeID, Seq: seq,
+		// ScopeSeq mirrors Seq: each of these helpers' envelopes carries a
+		// single fixed scope, so a given node's ops here never interleave
+		// scopes and the two counters coincide 1:1.
+		OpId: opID, OpType: crdt.OpThreatRecord, NodeId: nodeID, Seq: seq, ScopeSeq: seq,
 		Hlc:         fmt.Sprintf("1700000000000-%d-%s", seq, nodeID),
 		PayloadHash: "sha256:" + hex.EncodeToString(sum[:]), Payload: body,
 	}
@@ -175,12 +181,10 @@ func zoneOp(t *testing.T, opID, nodeID string, seq uint64, zoneScope string) *fr
 //
 // node.a and node.b are deliberately different origins, each single-scope:
 // this isolates "does per-scope SafeFloor/CompactBelow dispatch work" from a
-// separate, harder problem this test does not exercise -- a single origin
-// interleaving scopes in its own (global, not per-scope) seq counter can
-// stall ScopeState's contiguous-watermark computation for one of those
-// scopes indefinitely. That's a real, documented limitation (see
-// HARDENING_ROADMAP.md); this test's job is the scope-isolation guarantee,
-// not the interleaving one.
+// separate concern, the single-origin interleaving case, which
+// TestCompactorHandlesInterleavedScopesFromSingleOrigin below covers instead
+// (that case used to be a real, documented limitation -- see
+// HARDENING_ROADMAP.md and crdt.OpSet's scope_seq -- now fixed).
 func TestCompactorCompactsScopesIndependently(t *testing.T) {
 	set := crdt.NewOpSet()
 	set.Add(zoneOp(t, "f1", "node.b", 1, "fleet"))
@@ -225,5 +229,47 @@ func TestCompactorCompactsScopesIndependently(t *testing.T) {
 	}
 	if _, _, ok := c.Latest("fleet"); ok {
 		t.Fatal("Latest(fleet) should report nothing built, since fleet never compacted")
+	}
+}
+
+// TestCompactorHandlesInterleavedScopesFromSingleOrigin is the fix for the
+// limitation TestCompactorCompactsScopesIndependently's comment calls out: a
+// single origin's own history interleaving fleet and zone ops (exactly what
+// every node's own periodic checkpoint publishes alongside its own zone
+// detections looks like) must not stall either scope's compaction watermark.
+// It's covered at the OpSet layer by crdt.TestScopeStateAdvancesDespiteInterleavedScopes;
+// this test proves the whole Compactor -- both scopes' SafeFloor and
+// CompactBelow -- gets it right for a single interleaved origin too.
+func TestCompactorHandlesInterleavedScopesFromSingleOrigin(t *testing.T) {
+	set := crdt.NewOpSet()
+	// node.a interleaves: fleet(seq1,ScopeSeq1), zone:eu(seq2,ScopeSeq1),
+	// fleet(seq3,ScopeSeq2) -- global seq always increments, scope_seq only
+	// within its own scope, exactly as gossip.Engine.Publish assigns them.
+	interleaved := func(id string, seq, scopeSeq uint64, scopeKey string) *frienv1.OperationEnvelope {
+		env := zoneOp(t, id, "node.a", seq, scopeKey)
+		env.ScopeSeq = scopeSeq
+		return env
+	}
+	set.Add(interleaved("f1", 1, 1, "fleet"))
+	set.Add(interleaved("z1", 2, 1, "zone:eu"))
+	set.Add(interleaved("f2", 3, 2, "fleet"))
+
+	watermarks := NewPeerWatermarks()
+	watermarks.Observe("peer", "fleet", map[string]uint64{"node.a": 2})
+	watermarks.Observe("peer", "zone:eu", map[string]uint64{"node.a": 1})
+
+	pub := &recordingPublisher{}
+	signer := newTestSigner(t)
+	c := NewCompactor(set, watermarks, pub, func() []string { return []string{"fleet", "zone:eu"} }, peersFunc("peer"), signer, zerolog.Nop())
+	c.RunOnce()
+
+	if set.Has("f1") || set.Has("f2") {
+		t.Fatal("both fleet ops should have compacted despite being interleaved with a zone op")
+	}
+	if set.Has("z1") {
+		t.Fatal("the zone op should have compacted despite being interleaved with fleet ops")
+	}
+	if len(pub.published) != 2 {
+		t.Fatalf("expected a checkpoint for each of fleet and zone:eu, got %d", len(pub.published))
 	}
 }

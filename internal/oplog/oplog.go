@@ -123,7 +123,7 @@ func (l *Log) append(opType string, body []byte) (string, error) {
 	hlc := fmt.Sprintf("%s-%d-%s", time.Now().UTC().Format(time.RFC3339Nano), seq, l.nodeID)
 
 	canonical := identity.CanonicalSignedContent(
-		version.ProtoVersion, opID, opType, l.nodeID, hlc, seq, nil, payloadHash, "node",
+		version.ProtoVersion, opID, opType, l.nodeID, hlc, seq, 0, nil, payloadHash, "node",
 	)
 	sig, err := l.signer.Sign(canonical)
 	if err != nil {
@@ -165,7 +165,7 @@ func (l *Log) verifyEnvelope(env *frienv1.OperationEnvelope) error {
 		return fmt.Errorf("payload hash mismatch (op_id=%s)", env.OpId)
 	}
 	canonical := identity.CanonicalSignedContent(
-		env.ProtoVersion, env.OpId, env.OpType, env.NodeId, env.Hlc, env.Seq, env.Parents, env.PayloadHash, env.SignedBy,
+		env.ProtoVersion, env.OpId, env.OpType, env.NodeId, env.Hlc, env.Seq, env.ScopeSeq, env.Parents, env.PayloadHash, env.SignedBy,
 	)
 	if env.NodeId != l.nodeID {
 		return nil // cross-node verification deferred to the verify layer (Phase 4)

@@ -94,7 +94,7 @@ func TestIdentity_Load_Valid(t *testing.T) {
 	}
 
 	// The derived signer must actually sign with the certificate's key.
-	msg := identity.CanonicalSignedContent(1, "op", "t", id.NodeID, "hlc", 1, nil, "ph", "node")
+	msg := identity.CanonicalSignedContent(1, "op", "t", id.NodeID, "hlc", 1, 1, nil, "ph", "node")
 	sig, err := id.Signer().Sign(msg)
 	if err != nil || len(sig) != 64 {
 		t.Fatalf("signer.Sign: sig len %d err %v", len(sig), err)
