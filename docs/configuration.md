@@ -26,6 +26,7 @@ Daemon fails to start if any of these are missing or invalid:
 | `identity.cert_path` | string | Path to PEM node certificate (short-lived) |
 | `identity.key_path` | string | Path to PEM private key (encrypted at rest recommended) |
 | `identity.ca_cert_path` | string | Path to PEM CA cert (required when `ca_mode=file`, which is the default) |
+| `identity.ca_overlap_window` | duration | How long a `frienctl rotate-ca`-staged CA bundle stays trusted alongside the current one before superseding it. Default: `24h` |
 | `storage.wal_dir` | string | Directory for WAL files. Must be writable by `frien` user |
 | `storage.db_path` | string | Path to bbolt database file |
 | `transport.peer_port` | int | UDP port for QUIC peer mesh. Default: `7443` |

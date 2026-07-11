@@ -30,6 +30,12 @@ service AdminService {
   // for the configured interval, for a named scope ("fleet" | "zone:<name>")
   // or every subscribed scope when scope is empty.
   rpc TriggerCompaction(TriggerCompactionRequest) returns (TriggerCompactionResponse);
+  // RotateCA stages a new CA bundle alongside the currently trusted one for a
+  // bounded overlap window (see internal/identity.TrustBundle) rather than an
+  // atomic cutover, so a peer that hasn't yet observed the new bundle isn't
+  // rejected mid-rotation. Call it on every node before rolling out any
+  // new-CA-issued leaf certificate.
+  rpc RotateCA(RotateCARequest) returns (RotateCAResponse);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -310,6 +316,14 @@ message TriggerCompactionRequest {
 
 message TriggerCompactionResponse {
   repeated string compacted_scopes = 1;  // scopes that actually removed something
+}
+
+message RotateCARequest {
+  bytes next_ca_pem = 1;  // PEM-encoded CA bundle to trust alongside the current one
+}
+
+message RotateCAResponse {
+  bool in_overlap = 1;  // true once staged; false would mean it was rejected (returned as an error instead)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

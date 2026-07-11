@@ -141,7 +141,7 @@ func run(configPath string) error {
 	// ── 5b. Bring up the peer mesh (transport + membership + CRDT state) ───────
 	meshCtx, meshCancel := context.WithCancel(context.Background())
 	defer meshCancel()
-	mesh, clock, compactor, err := buildMesh(meshCtx, cfg, id, store, log)
+	mesh, clock, compactor, trustBundle, meshTransport, err := buildMesh(meshCtx, cfg, id, store, log)
 	if err != nil {
 		return fmt.Errorf("starting mesh: %w", err)
 	}
@@ -161,6 +161,7 @@ func run(configPath string) error {
 	admin.SetPeerSource(peerAdapter{mesh})
 	admin.SetOperatorOpInjector(mesh)
 	admin.SetCompactionTrigger(compactor)
+	admin.SetCARotator(&caRotator{bundle: trustBundle, tr: meshTransport})
 	adminSrv, err := admingrpc.NewServer(admingrpc.Options{
 		SocketPath:   cfg.AdminAPI.Socket,
 		SocketMode:   0o660,
@@ -209,10 +210,11 @@ func run(configPath string) error {
 // Logical Clock (seeded from persisted state so it never regresses), the CRDT op
 // set, the scope router, and the gossip engine. It returns the running engine and
 // the clock (for periodic persistence).
-func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, store *storage.Store, log zerolog.Logger) (*gossip.Engine, *crdt.Clock, *checkpoint.Compactor, error) {
-	caPool, err := identity.LoadCACertPool(cfg.Identity.CACertPath)
+func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, store *storage.Store, log zerolog.Logger) (*gossip.Engine, *crdt.Clock, *checkpoint.Compactor, *identity.TrustBundle, *transport.Transport, error) {
+	overlapWindow := parseDuration(cfg.Identity.CAOverlapWindow, 24*time.Hour)
+	trustBundle, err := identity.NewTrustBundleFromFile(cfg.Identity.CACertPath, overlapWindow)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 
 	// Shared with gossip.New below: a revocation ingested via gossip must also
@@ -221,7 +223,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	revocations := revocation.NewSet()
 
 	skew := parseDuration(cfg.Transport.ClockSkewWindow, 10*time.Second)
-	tr, err := transport.New(id, caPool, transport.Config{
+	tr, err := transport.NewWithTrustSource(id, trustBundle, transport.Config{
 		BindAddr:        net.JoinHostPort(cfg.Transport.PeerBind, strconv.Itoa(cfg.Transport.PeerPort)),
 		MaxMessageBytes: cfg.Transport.MaxMessageBytes,
 		DialTimeout:     parseDuration(cfg.Transport.DialTimeout, 5*time.Second),
@@ -229,8 +231,13 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 		KEM:             kemMode(cfg.Identity.PQCKem),
 	}, revocations, log)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
+	// The overlap window's implicit cutover (see TrustBundle.Pool) only takes
+	// effect on a Transport the next time something asks it to refresh; drive
+	// that periodically so a rotation completes on its own once staged,
+	// without requiring a second operator action or a restart.
+	go runTrustRefresher(ctx, tr, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
 
 	clockOpts := []crdt.ClockOption{crdt.WithMaxDrift(skew)}
 	if raw, gerr := store.MetaGet(storage.MetaKeyHLC); gerr == nil && len(raw) > 0 {
@@ -249,7 +256,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	if cfg.Identity.OperatorRootCert != "" {
 		operatorKey, err = identity.LoadOperatorPublicKey(cfg.Identity.OperatorRootCert)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, nil, err
 		}
 	}
 
@@ -269,7 +276,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	}, id, clock, set, scope.NewRouter(cfg.Node.Zone), tr, revocations, log)
 
 	if err := eng.Start(ctx); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	log.Info().Str("peer_bind", cfg.Transport.PeerBind).Int("peer_port", cfg.Transport.PeerPort).Msg("peer mesh started")
 
@@ -287,7 +294,7 @@ func buildMesh(ctx context.Context, cfg *config.Config, id *identity.Identity, s
 	eng.SetCheckpointSource(compactor)
 	go runCompactor(ctx, compactor, parseDuration(cfg.Storage.CompactionInterval, time.Hour), log)
 
-	return eng, clock, compactor, nil
+	return eng, clock, compactor, trustBundle, tr, nil
 }
 
 // peerAdapter exposes the gossip engine's roster to the admin ListPeers RPC.
@@ -326,6 +333,42 @@ func runCompactor(ctx context.Context, c *checkpoint.Compactor, interval time.Du
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Second):
+		}
+	}
+}
+
+// caRotator adapts a TrustBundle + Transport pair to admingrpc.CARotator:
+// staging a new CA bundle alone isn't enough, the live transport also has to
+// be told to re-read it before the next handshake picks it up.
+type caRotator struct {
+	bundle *identity.TrustBundle
+	tr     *transport.Transport
+}
+
+func (r *caRotator) PrepareNext(nextCAPEM []byte) error {
+	if err := r.bundle.PrepareNext(nextCAPEM); err != nil {
+		return err
+	}
+	return r.tr.RefreshTrust()
+}
+
+// runTrustRefresher periodically re-reads the trust bundle into the live
+// transport so a staged CA rotation's overlap window actually expires (see
+// identity.TrustBundle.Pool) without requiring a second operator action.
+func runTrustRefresher(ctx context.Context, tr *transport.Transport, interval time.Duration, log zerolog.Logger) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := tr.RefreshTrust(); err != nil {
+				log.Error().Err(err).Msg("refreshing trust bundle")
+			}
 		}
 	}
 }

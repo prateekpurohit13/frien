@@ -69,6 +69,15 @@ type CompactionTrigger interface {
 	TriggerCompaction(scopeKey string) []string
 }
 
+// CARotator stages a new CA bundle for the overlap window (see
+// internal/identity.TrustBundle) and makes it take effect on the live
+// transport. cmd/friend adapts a TrustBundle + transport.Transport pair to
+// satisfy this (staging alone isn't enough -- the transport must also be
+// told to re-read the bundle).
+type CARotator interface {
+	PrepareNext(nextCAPEM []byte) error
+}
+
 // AdminService implements the local admin gRPC API (proto/v1 AdminService).
 //
 // Phase 1 implements GetStatus, which needs only config, identity, and storage —
@@ -83,6 +92,7 @@ type AdminService struct {
 	peers     PeerSource
 	injector  OperatorOpInjector
 	compactor CompactionTrigger
+	rotator   CARotator
 	readOnly  bool
 	log       zerolog.Logger
 }
@@ -103,6 +113,9 @@ func (s *AdminService) SetOperatorOpInjector(i OperatorOpInjector) { s.injector 
 
 // SetCompactionTrigger wires TriggerCompaction once the compactor is running.
 func (s *AdminService) SetCompactionTrigger(c CompactionTrigger) { s.compactor = c }
+
+// SetCARotator wires RotateCA once the trust bundle and transport are running.
+func (s *AdminService) SetCARotator(r CARotator) { s.rotator = r }
 
 // GetStatus returns current node health and state. Available to any authenticated
 // caller (RBAC enforcement arrives with the Auth interceptor in a later phase).
@@ -229,6 +242,28 @@ func (s *AdminService) TriggerCompaction(_ context.Context, req *frienv1.Trigger
 	}
 	compacted := s.compactor.TriggerCompaction(req.GetScope())
 	return &frienv1.TriggerCompactionResponse{CompactedScopes: compacted}, nil
+}
+
+// RotateCA stages a new CA bundle for the overlap window. It never performs
+// an atomic cutover itself -- the old bundle stays valid until the window
+// configured on the trust bundle elapses (see identity.TrustBundle), so
+// callers must run this on every node before rolling out any new-CA-issued
+// leaf certificate, not as a substitute for that rollout.
+func (s *AdminService) RotateCA(_ context.Context, req *frienv1.RotateCARequest) (*frienv1.RotateCAResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.rotator == nil {
+		return nil, notYet("RotateCA", "Phase 4 follow-up (mesh wiring)")
+	}
+	if len(req.GetNextCaPem()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "next_ca_pem is required")
+	}
+	if err := s.rotator.PrepareNext(req.GetNextCaPem()); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "staging new CA bundle: %v", err)
+	}
+	s.log.Info().Msg("admin: new CA bundle staged for overlap-window rotation")
+	return &frienv1.RotateCAResponse{InOverlap: true}, nil
 }
 
 // rejectIfReadOnly guards every mutating RPC against admin_api.read_only.

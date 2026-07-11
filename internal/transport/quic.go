@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -13,6 +14,17 @@ import (
 
 	"github.com/prateekpurohit13/frien/internal/identity"
 )
+
+// TrustSource supplies the currently effective CA pool. identity.TrustBundle
+// satisfies it; a Transport built from a plain *x509.CertPool wraps it in a
+// static source that always returns the same pool.
+type TrustSource interface {
+	Pool() (*x509.CertPool, error)
+}
+
+type staticTrust struct{ pool *x509.CertPool }
+
+func (s staticTrust) Pool() (*x509.CertPool, error) { return s.pool, nil }
 
 // Config holds the transport tunables drawn from the daemon's transport config.
 type Config struct {
@@ -34,15 +46,39 @@ type Transport struct {
 	maxBytes int
 	dialTO   time.Duration
 	log      zerolog.Logger
+
+	trustSrc TrustSource
+	trustMu  sync.RWMutex
+	trust    *x509.CertPool // last pool resolved from trustSrc; read by every handshake
 }
 
 // New builds a Transport bound to a node identity and the mesh CA pool. rc may be
 // nil until the revocation set exists (Phase 4); a nil checker revokes nothing.
+// For a CA pool that never rotates, pass a plain *x509.CertPool; for one that
+// does, build a Transport with NewWithTrustSource instead.
 func New(id *identity.Identity, caPool *x509.CertPool, cfg Config, rc RevocationChecker, log zerolog.Logger) (*Transport, error) {
+	if caPool == nil {
+		return nil, fmt.Errorf("transport: CA pool is required for peer verification")
+	}
+	return NewWithTrustSource(id, staticTrust{pool: caPool}, cfg, rc, log)
+}
+
+// NewWithTrustSource builds a Transport whose trust pool is resolved from src
+// at construction and again on every RefreshTrust call, so a live CA rotation
+// (see identity.TrustBundle) takes effect without rebuilding the Transport.
+func NewWithTrustSource(id *identity.Identity, src TrustSource, cfg Config, rc RevocationChecker, log zerolog.Logger) (*Transport, error) {
 	if cfg.MaxMessageBytes <= 0 {
 		return nil, fmt.Errorf("transport: max_message_bytes must be positive, got %d", cfg.MaxMessageBytes)
 	}
-	tlsConf, err := tlsConfig(id, caPool, cfg.KEM, rc)
+	if src == nil {
+		return nil, fmt.Errorf("transport: trust source is required for peer verification")
+	}
+	initial, err := src.Pool()
+	if err != nil {
+		return nil, fmt.Errorf("transport: resolving initial CA pool: %w", err)
+	}
+	t := &Transport{id: id, trustSrc: src, trust: initial, log: log}
+	tlsConf, err := tlsConfig(id, t.currentPool, cfg.KEM, rc)
 	if err != nil {
 		return nil, err
 	}
@@ -50,18 +86,36 @@ func New(id *identity.Identity, caPool *x509.CertPool, cfg Config, rc Revocation
 	if idle <= 0 {
 		idle = 30 * time.Second
 	}
-	return &Transport{
-		id:      id,
-		tlsConf: tlsConf,
-		quicConf: &quic.Config{
-			MaxIdleTimeout:  idle,
-			KeepAlivePeriod: idle / 2,
-		},
-		bindAddr: cfg.BindAddr,
-		maxBytes: cfg.MaxMessageBytes,
-		dialTO:   cfg.DialTimeout,
-		log:      log,
-	}, nil
+	t.tlsConf = tlsConf
+	t.quicConf = &quic.Config{MaxIdleTimeout: idle, KeepAlivePeriod: idle / 2}
+	t.bindAddr = cfg.BindAddr
+	t.maxBytes = cfg.MaxMessageBytes
+	t.dialTO = cfg.DialTimeout
+	return t, nil
+}
+
+// currentPool returns the last resolved trust pool. It is the accessor every
+// handshake reads through (see tlsConfig); RefreshTrust is what actually
+// updates it.
+func (t *Transport) currentPool() *x509.CertPool {
+	t.trustMu.RLock()
+	defer t.trustMu.RUnlock()
+	return t.trust
+}
+
+// RefreshTrust re-queries the Transport's TrustSource and, on success, swaps
+// in the result for every subsequent handshake. On error the previous pool
+// stays in effect (fail-safe: a transient read/parse error on a prepared
+// rotation must never leave the node unable to verify any peer at all).
+func (t *Transport) RefreshTrust() error {
+	pool, err := t.trustSrc.Pool()
+	if err != nil {
+		return fmt.Errorf("transport: refreshing trust pool: %w", err)
+	}
+	t.trustMu.Lock()
+	t.trust = pool
+	t.trustMu.Unlock()
+	return nil
 }
 
 // Listen opens the QUIC listener on the configured bind address.

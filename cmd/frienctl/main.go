@@ -44,6 +44,8 @@ func dispatch(args []string) error {
 		return cmdRevoke(args[1:])
 	case "compact":
 		return cmdCompact(args[1:])
+	case "rotate-ca":
+		return cmdRotateCA(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -61,6 +63,7 @@ Usage:
   frienctl revoke sign --node-id ID --fingerprint FP --key PATH [--reason TEXT] [--status tainted|revoked] [--out FILE]
   frienctl revoke submit [--file FILE] [--socket PATH | --config PATH]
   frienctl compact [--scope SCOPE] [--socket PATH | --config PATH]
+  frienctl rotate-ca --ca-file BUNDLE.pem [--socket PATH | --config PATH]
   frienctl version
 
 "revoke sign" runs entirely offline against the operator's own private key

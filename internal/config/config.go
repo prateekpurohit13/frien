@@ -39,6 +39,7 @@ type IdentityConfig struct {
 	CertPath         string `yaml:"cert_path"`
 	KeyPath          string `yaml:"key_path"`
 	CACertPath       string `yaml:"ca_cert_path"`
+	CAOverlapWindow  string `yaml:"ca_overlap_window"` // how long a RotateCA-staged bundle stays valid alongside the current one; default 24h
 	RenewalThreshold string `yaml:"renewal_threshold"`
 	RenewalEndpoint  string `yaml:"renewal_endpoint"`
 	OperatorRootCert string `yaml:"operator_root_cert"`

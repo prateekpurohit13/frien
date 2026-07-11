@@ -31,6 +31,7 @@ const (
 	AdminService_TestPolicy_FullMethodName          = "/frien.v1.AdminService/TestPolicy"
 	AdminService_InjectOperatorOp_FullMethodName    = "/frien.v1.AdminService/InjectOperatorOp"
 	AdminService_TriggerCompaction_FullMethodName   = "/frien.v1.AdminService/TriggerCompaction"
+	AdminService_RotateCA_FullMethodName            = "/frien.v1.AdminService/RotateCA"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -58,6 +59,12 @@ type AdminServiceClient interface {
 	// for the configured interval, for a named scope ("fleet" | "zone:<name>")
 	// or every subscribed scope when scope is empty.
 	TriggerCompaction(ctx context.Context, in *TriggerCompactionRequest, opts ...grpc.CallOption) (*TriggerCompactionResponse, error)
+	// RotateCA stages a new CA bundle alongside the currently trusted one for a
+	// bounded overlap window (see internal/identity.TrustBundle) rather than an
+	// atomic cutover, so a peer that hasn't yet observed the new bundle isn't
+	// rejected mid-rotation. Call it on every node before rolling out any
+	// new-CA-issued leaf certificate.
+	RotateCA(ctx context.Context, in *RotateCARequest, opts ...grpc.CallOption) (*RotateCAResponse, error)
 }
 
 type adminServiceClient struct {
@@ -188,6 +195,16 @@ func (c *adminServiceClient) TriggerCompaction(ctx context.Context, in *TriggerC
 	return out, nil
 }
 
+func (c *adminServiceClient) RotateCA(ctx context.Context, in *RotateCARequest, opts ...grpc.CallOption) (*RotateCAResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RotateCAResponse)
+	err := c.cc.Invoke(ctx, AdminService_RotateCA_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -213,6 +230,12 @@ type AdminServiceServer interface {
 	// for the configured interval, for a named scope ("fleet" | "zone:<name>")
 	// or every subscribed scope when scope is empty.
 	TriggerCompaction(context.Context, *TriggerCompactionRequest) (*TriggerCompactionResponse, error)
+	// RotateCA stages a new CA bundle alongside the currently trusted one for a
+	// bounded overlap window (see internal/identity.TrustBundle) rather than an
+	// atomic cutover, so a peer that hasn't yet observed the new bundle isn't
+	// rejected mid-rotation. Call it on every node before rolling out any
+	// new-CA-issued leaf certificate.
+	RotateCA(context.Context, *RotateCARequest) (*RotateCAResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -258,6 +281,9 @@ func (UnimplementedAdminServiceServer) InjectOperatorOp(context.Context, *Inject
 }
 func (UnimplementedAdminServiceServer) TriggerCompaction(context.Context, *TriggerCompactionRequest) (*TriggerCompactionResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TriggerCompaction not implemented")
+}
+func (UnimplementedAdminServiceServer) RotateCA(context.Context, *RotateCARequest) (*RotateCAResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RotateCA not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -496,6 +522,24 @@ func _AdminService_TriggerCompaction_Handler(srv interface{}, ctx context.Contex
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_RotateCA_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RotateCARequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).RotateCA(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_RotateCA_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).RotateCA(ctx, req.(*RotateCARequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -550,6 +594,10 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "TriggerCompaction",
 			Handler:    _AdminService_TriggerCompaction_Handler,
+		},
+		{
+			MethodName: "RotateCA",
+			Handler:    _AdminService_RotateCA_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

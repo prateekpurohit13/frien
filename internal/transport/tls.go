@@ -34,11 +34,17 @@ type RevocationChecker interface {
 // chaining to the mesh CA. Peers are identified by certificate CN (node id), not
 // by DNS name — nodes dial each other by address — so hostname verification is
 // replaced with explicit chain-plus-revocation verification in verifyPeer.
-func tlsConfig(id *identity.Identity, caPool *x509.CertPool, kem KEMMode, rc RevocationChecker) (*tls.Config, error) {
+//
+// poolFn is consulted fresh on every handshake (both directly by verifyPeer,
+// and via GetConfigForClient for the listener role's own built-in ClientCAs
+// check) rather than a pool captured once at config-build time, so a live CA
+// rotation (see identity.TrustBundle) takes effect on a Transport's very next
+// handshake without rebuilding the config or restarting the listener/dialer.
+func tlsConfig(id *identity.Identity, poolFn func() *x509.CertPool, kem KEMMode, rc RevocationChecker) (*tls.Config, error) {
 	if id == nil {
 		return nil, fmt.Errorf("transport: identity is required")
 	}
-	if caPool == nil {
+	if poolFn == nil || poolFn() == nil {
 		return nil, fmt.Errorf("transport: CA pool is required for peer verification")
 	}
 	curves, err := curvePreferences(kem)
@@ -46,27 +52,39 @@ func tlsConfig(id *identity.Identity, caPool *x509.CertPool, kem KEMMode, rc Rev
 		return nil, err
 	}
 
-	return &tls.Config{
+	base := &tls.Config{
 		MinVersion:       tls.VersionTLS13,
 		Certificates:     []tls.Certificate{id.TLSCert},
 		ClientAuth:       tls.RequireAndVerifyClientCert,
-		ClientCAs:        caPool,
-		RootCAs:          caPool,
 		CurvePreferences: curves,
 		NextProtos:       []string{ALPNProto},
 		// Hostname verification is meaningless for a CN-identified mesh peer, so
 		// disable the default check and verify the chain ourselves in verifyPeer.
-		// This applies to the dialer role; the listener role verifies via ClientCAs.
+		// This applies to the dialer role; the listener role verifies via ClientCAs
+		// (refreshed per handshake below via GetConfigForClient).
 		InsecureSkipVerify:    true,
-		VerifyPeerCertificate: verifyPeer(caPool, rc),
-	}, nil
+		VerifyPeerCertificate: verifyPeer(poolFn, rc),
+	}
+	// GetConfigForClient only affects the listener/server role; the dialer role
+	// is fully covered by InsecureSkipVerify + VerifyPeerCertificate above, since
+	// a client's own built-in RootCAs check never runs when InsecureSkipVerify
+	// is set. A fresh pool is fetched per handshake rather than once here.
+	base.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		cfg := base.Clone()
+		cfg.GetConfigForClient = nil
+		pool := poolFn()
+		cfg.ClientCAs = pool
+		cfg.RootCAs = pool
+		return cfg, nil
+	}
+	return base, nil
 }
 
 // verifyPeer verifies a peer certificate chain against the mesh CA without a
 // DNS-name check and rejects revoked fingerprints. It runs on both roles: for
 // the dialer it is the sole verification (InsecureSkipVerify bypasses the
 // default), and for the listener it runs in addition to ClientCAs verification.
-func verifyPeer(caPool *x509.CertPool, rc RevocationChecker) func([][]byte, [][]*x509.Certificate) error {
+func verifyPeer(poolFn func() *x509.CertPool, rc RevocationChecker) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return fmt.Errorf("transport: peer presented no certificate")
@@ -83,7 +101,7 @@ func verifyPeer(caPool *x509.CertPool, rc RevocationChecker) func([][]byte, [][]
 			}
 			intermediates.AddCert(ic)
 		}
-		if _, err := leaf.Verify(x509.VerifyOptions{Roots: caPool, Intermediates: intermediates}); err != nil {
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: poolFn(), Intermediates: intermediates}); err != nil {
 			return fmt.Errorf("transport: peer certificate not trusted: %w", err)
 		}
 		if rc != nil && rc.IsRevoked(identity.CertFingerprint(leaf)) {

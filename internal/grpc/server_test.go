@@ -372,6 +372,101 @@ func TestTriggerCompaction_ReadOnlyRejects(t *testing.T) {
 	}
 }
 
+type fakeRotator struct {
+	lastPEM []byte
+	err     error
+}
+
+func (f *fakeRotator) PrepareNext(pem []byte) error {
+	f.lastPEM = pem
+	return f.err
+}
+
+func TestRotateCA_RoutesToRotator(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	rotator := &fakeRotator{}
+	admin.SetCARotator(rotator)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	resp, err := frienv1.NewAdminServiceClient(conn).RotateCA(
+		context.Background(), &frienv1.RotateCARequest{NextCaPem: []byte("pem-bytes")})
+	if err != nil {
+		t.Fatalf("RotateCA: %v", err)
+	}
+	if !resp.GetInOverlap() {
+		t.Fatal("expected in_overlap=true on success")
+	}
+	if string(rotator.lastPEM) != "pem-bytes" {
+		t.Fatalf("rotator received %q, want pem-bytes", rotator.lastPEM)
+	}
+}
+
+func TestRotateCA_RejectsEmptyPEM(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, false, zerolog.Nop())
+	admin.SetCARotator(&fakeRotator{})
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).RotateCA(context.Background(), &frienv1.RotateCARequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument for empty PEM, got %v", status.Code(err))
+	}
+}
+
+func TestRotateCA_ReadOnlyRejects(t *testing.T) {
+	src := StatusFunc(func() StatusInfo { return StatusInfo{NodeID: "n"} })
+	socket := filepath.Join(t.TempDir(), "admin.sock")
+	admin := NewAdminService(src, true, zerolog.Nop())
+	rotator := &fakeRotator{}
+	admin.SetCARotator(rotator)
+	srv, err := NewServer(Options{SocketPath: socket, MaxRecvBytes: 512 * 1024}, admin, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.Start()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Stop(ctx)
+	})
+
+	conn := dialSocket(t, socket)
+	defer conn.Close()
+	_, err = frienv1.NewAdminServiceClient(conn).RotateCA(
+		context.Background(), &frienv1.RotateCARequest{NextCaPem: []byte("pem")})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition on a read-only admin API, got %v", status.Code(err))
+	}
+	if rotator.lastPEM != nil {
+		t.Fatal("the rotator must never be called when the admin API is read-only")
+	}
+}
+
 func TestNewServer_NoListenerConfigured(t *testing.T) {
 	src := StatusFunc(func() StatusInfo { return StatusInfo{} })
 	admin := NewAdminService(src, false, zerolog.Nop())
