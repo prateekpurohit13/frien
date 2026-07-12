@@ -47,7 +47,7 @@ func buildEnforcement(ctx context.Context, cfg *config.Config, id *identity.Iden
 		return nil, err
 	}
 
-	resolver := &meshResolver{mesh: mesh, selfID: cfg.Node.ID, selfTier: cfg.Node.TrustTier}
+	resolver := &meshResolver{mesh: mesh}
 	coord := coordinator.New(coordinator.Deps{
 		NodeID:    cfg.Node.ID,
 		Client:    client,
@@ -87,12 +87,15 @@ func buildEnforcementClient(ctx context.Context, cfg *config.Config, store *stor
 		return nil, err
 	}
 	e := enforcer.New(rb, nil, log)
+	e.SetRateLimit(cfg.Policy.MaxNewRulesPerMinute)
 
 	var adapter enforcer.Adapter
 	if cfg.Enforcement.NFTables.Enabled {
 		a, aerr := enforcer.NewNFTablesAdapter(enforcer.NFTablesOptions{
-			Table:      cfg.Enforcement.NFTables.Table,
-			ChainInput: cfg.Enforcement.NFTables.ChainInput,
+			Table:        cfg.Enforcement.NFTables.Table,
+			ChainInput:   cfg.Enforcement.NFTables.ChainInput,
+			ChainForward: cfg.Enforcement.NFTables.ChainForward,
+			DenyAction:   cfg.Enforcement.NFTables.DenyAction,
 		}, log)
 		if aerr != nil {
 			log.Warn().Err(aerr).Msg("enforcement: nftables adapter unavailable; using in-memory observe/dry-run backend")
@@ -199,20 +202,16 @@ func sweepLoop(ctx context.Context, coord *coordinator.Coordinator, interval tim
 }
 
 // meshResolver backs the coordinator's TrustResolver and PartitionResolver over
-// the live mesh and this node's configured trust tier.
+// the live mesh. Trust tiers come from each node's CA-signed certificate (learned
+// at the mTLS handshake, seeded from this node's own cert for self), so quorum
+// weighting is Sybil-resistant: a node cannot claim a higher tier than its
+// certificate was issued with.
 type meshResolver struct {
-	mesh     *gossip.Engine
-	selfID   string
-	selfTier string
+	mesh *gossip.Engine
 }
 
 func (r *meshResolver) TrustTier(nodeID, _ string) string {
-	// Peers' trust tiers are not yet gossiped in PeerState; until then only this
-	// node's own tier is known, and peers default to the conservative baseline.
-	if nodeID == r.selfID && r.selfTier != "" {
-		return r.selfTier
-	}
-	return "standard"
+	return r.mesh.TrustTier(nodeID)
 }
 
 func (r *meshResolver) Excluded(nodeID, _ string) bool { return r.mesh.IsNodeExcluded(nodeID) }

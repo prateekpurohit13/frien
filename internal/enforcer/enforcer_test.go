@@ -109,6 +109,45 @@ func TestRuleSelfExpires(t *testing.T) {
 	}
 }
 
+// TestRateLimitShedsNewRules proves the new-rule cap sheds fail-safe: over the
+// per-minute budget, an apply installs nothing, persists no token, and returns
+// applied=false with no error.
+func TestRateLimitShedsNewRules(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	rb, _ := NewRollbackStore(testDB(t))
+	e := New(rb, clk.now, zerolog.Nop())
+	e.Register(NewMemAdapter("nftables", clk.now), ModeEnforce)
+	e.SetRateLimit(2) // 2 new rules/min, burst 2
+
+	// First two (distinct targets) apply.
+	for i, target := range []string{"203.0.113.1", "203.0.113.2"} {
+		applied, err := e.Apply(blockDecision(string(rune('a'+i)), target, "30m"))
+		if err != nil || !applied {
+			t.Fatalf("apply %d: applied=%v err=%v", i, applied, err)
+		}
+	}
+	// Third is shed: applied=false, no error, no rule, no token persisted.
+	applied, err := e.Apply(blockDecision("c", "203.0.113.3", "30m"))
+	if err != nil || applied {
+		t.Fatalf("third apply should be shed: applied=%v err=%v", applied, err)
+	}
+	if e.RateShedCount() != 1 {
+		t.Fatalf("expected shed count 1, got %d", e.RateShedCount())
+	}
+	if rules, _ := listAll(e); len(rules) != 2 {
+		t.Fatalf("expected 2 installed rules, got %d", len(rules))
+	}
+	if _, ok, _ := rb.Get("tok-c"); ok {
+		t.Fatal("shed rule must not persist a rollback token")
+	}
+
+	// After a minute the bucket refills and a new rule applies again.
+	clk.advance(time.Minute)
+	if applied, err := e.Apply(blockDecision("d", "203.0.113.4", "30m")); err != nil || !applied {
+		t.Fatalf("apply after refill: applied=%v err=%v", applied, err)
+	}
+}
+
 func TestApplyRefusesNoTimeout(t *testing.T) {
 	e := New(nil, nil, zerolog.Nop())
 	e.Register(NewMemAdapter("nftables", nil), ModeEnforce)

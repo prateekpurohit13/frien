@@ -144,6 +144,7 @@ type NFTablesConfig struct {
 	Table                 string `yaml:"table"`
 	ChainInput            string `yaml:"chain_input"`
 	ChainForward          string `yaml:"chain_forward"`
+	DenyAction            string `yaml:"deny_action"` // "drop" (default) | "reject"
 	MaxRuleTTL            string `yaml:"max_rule_ttl"`
 	KernelTimeoutRequired bool   `yaml:"kernel_timeout_required"`
 	DeadmanSwitchTimeout  string `yaml:"deadman_switch_timeout"`
@@ -322,6 +323,11 @@ func (c *Config) Validate() error {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			ve.add(fmt.Sprintf("policy.protected_cidrs: invalid CIDR %q: %v", cidr, err))
 		}
+	}
+
+	// nftables deny action
+	if da := c.Enforcement.NFTables.DenyAction; da != "" && da != "drop" && da != "reject" {
+		ve.add(fmt.Sprintf("enforcement.nftables.deny_action: must be drop|reject, got %q", da))
 	}
 
 	// Enforcement durations (optional; validated only when set)

@@ -71,10 +71,6 @@ type Coordinator struct {
 	mu        sync.Mutex
 	policy    *policy.Policy
 	protected *policy.ProtectedSet
-	// enforced remembers indicators already acted on under the active policy
-	// version, mapping indicator -> rollback token, so a standing threat is not
-	// re-applied and re-published on every sweep. Cleared when the policy changes.
-	enforced map[string]string
 }
 
 // Deps bundles the coordinator's collaborators.
@@ -107,20 +103,19 @@ func New(d Deps) *Coordinator {
 		publisher: d.Publisher,
 		trust:     d.Trust,
 		partition: d.Partition,
-		enforced:  make(map[string]string),
 	}
 }
 
-// SetPolicy installs a verified active policy and its derived protected set,
-// resetting the enforced-indicator memory (a new policy re-evaluates
-// everything). The caller is responsible for having verified the policy's
-// operator signature first.
+// SetPolicy installs a verified active policy and its derived protected set. A
+// new policy simply re-evaluates everything on the next sweep; there is no
+// per-indicator memory to reset because dedup is computed against the
+// enforcer's actual active rules, not a cached map (see Sweep). The caller is
+// responsible for having verified the policy's operator signature first.
 func (c *Coordinator) SetPolicy(p *policy.Policy, protected *policy.ProtectedSet) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.policy = p
 	c.protected = protected
-	c.enforced = make(map[string]string)
 	if c.auditLog != nil && p != nil {
 		_, _ = c.auditLog.Append(audit.Entry{
 			Actor:    "operator",
@@ -144,12 +139,16 @@ func (c *Coordinator) ActivePolicy() *policy.Policy {
 func (c *Coordinator) Explain(indicator string) (audit.Explanation, error) {
 	c.mu.Lock()
 	p, protected := c.policy, c.protected
-	token := c.enforced[indicator]
 	c.mu.Unlock()
 
 	if p == nil {
 		return audit.Explanation{Indicator: indicator, Decision: policy.OutcomeNoRecord, Reason: "no active policy"}, nil
 	}
+	// Surface the live rollback token if this indicator is currently enforced,
+	// looked up from the enforcer's actual active rules (authoritative) rather
+	// than any cached view.
+	token := c.activeTokenFor(indicator)
+
 	in, ok := c.buildInput(indicator, p, protected)
 	if !ok {
 		return audit.Explanation{Indicator: indicator, Decision: policy.OutcomeNoRecord, Reason: "no present threat record for this indicator"}, nil
@@ -167,15 +166,10 @@ func (c *Coordinator) Explain(indicator string) (audit.Explanation, error) {
 func (c *Coordinator) EvaluateAndEnforce(indicator string) (policy.Decision, string, error) {
 	c.mu.Lock()
 	p, protected := c.policy, c.protected
+	c.mu.Unlock()
 	if p == nil {
-		c.mu.Unlock()
 		return policy.Decision{Indicator: indicator, Outcome: policy.OutcomeNoRecord, Reason: "no active policy"}, "", nil
 	}
-	if tok, done := c.enforced[indicator]; done {
-		c.mu.Unlock()
-		return policy.Decision{Indicator: indicator, Outcome: policy.OutcomeEnforced, Reason: "already enforced"}, tok, nil
-	}
-	c.mu.Unlock()
 
 	in, ok := c.buildInput(indicator, p, protected)
 	if !ok {
@@ -189,6 +183,26 @@ func (c *Coordinator) EvaluateAndEnforce(indicator string) (policy.Decision, str
 		return d, "", nil
 	}
 
+	// Dedup against the enforcer's ACTUAL active rules (the authoritative
+	// source), not a cached map: if a live rule already covers this indicator we
+	// do not mint a second decision. This is crash-safe by construction (a
+	// restart re-reads live state) and self-healing (once a rule kernel-expires
+	// while the threat persists, the next pass re-enforces it).
+	if tok := c.activeTokenFor(indicator); tok != "" {
+		return d, tok, nil
+	}
+
+	token, err := c.applyDecision(indicator, in, d)
+	return d, token, err
+}
+
+// applyDecision mints and applies a decision, then (only if a rule was actually
+// installed) audits and publishes it. When the client reports applied=false —
+// the adapter is in observe mode, the action produces no rule, or the enforcer
+// shed it under the new-rule rate cap — no audit/publish/mesh side effect
+// occurs and an empty token is returned. This keeps the mesh's immutable
+// decision log honest: it records rules that exist, not ones that were withheld.
+func (c *Coordinator) applyDecision(indicator string, in evalInput, d policy.Decision) (string, error) {
 	token := newID("rbk_")
 	decID := newID("dec_")
 	createdAt := c.clock().UTC().Format(time.RFC3339)
@@ -199,9 +213,15 @@ func (c *Coordinator) EvaluateAndEnforce(indicator string) (policy.Decision, str
 	applied, err := c.client.Apply(dec)
 	if err != nil {
 		c.log.Error().Err(err).Str("indicator", indicator).Msg("coordinator: enforcement apply failed")
-		return d, "", fmt.Errorf("applying enforcement: %w", err)
+		return "", fmt.Errorf("applying enforcement: %w", err)
 	}
-	dec.Applied = applied
+	if !applied {
+		// Computed but not installed (observe mode / no-rule action / rate cap).
+		c.log.Info().Str("indicator", indicator).Str("outcome", d.Outcome).
+			Msg("coordinator: decision computed but not applied by enforcer")
+		return "", nil
+	}
+	dec.Applied = true
 
 	auditID := ""
 	if c.auditLog != nil {
@@ -229,25 +249,28 @@ func (c *Coordinator) EvaluateAndEnforce(indicator string) (policy.Decision, str
 		c.log.Warn().Err(perr).Str("indicator", indicator).Msg("coordinator: publishing decision op")
 	}
 
-	c.mu.Lock()
-	c.enforced[indicator] = token
-	c.mu.Unlock()
-
 	c.log.Info().
 		Str("indicator", indicator).
 		Str("decision", decID).
 		Str("token", token).
-		Bool("applied", applied).
 		Str("audit", auditID).
-		Msg("coordinator: enforcement decision made")
-	_ = auditID
-	return d, token, nil
+		Msg("coordinator: enforcement decision applied")
+	return token, nil
 }
 
-// Sweep evaluates and (where warranted) enforces every present indicator. The
-// daemon can call it periodically; dedup keeps repeated sweeps cheap and
-// idempotent.
+// Sweep evaluates and (where warranted) enforces every present indicator. It
+// snapshots the enforcer's active rules ONCE up front and skips indicators
+// already covered, so a sweep is O(threats + rules) with a single List call
+// regardless of fleet size, and repeated sweeps never re-apply a live rule.
 func (c *Coordinator) Sweep() {
+	c.mu.Lock()
+	p, protected := c.policy, c.protected
+	c.mu.Unlock()
+	if p == nil {
+		return
+	}
+
+	active := c.activeTargetSet()
 	now := c.clock()
 	seen := make(map[string]struct{})
 	for _, env := range c.state.PresentThreatOps(now) {
@@ -263,10 +286,54 @@ func (c *Coordinator) Sweep() {
 			continue
 		}
 		seen[ind] = struct{}{}
-		if _, _, err := c.EvaluateAndEnforce(ind); err != nil {
+		if _, covered := active[ind]; covered {
+			continue // a live rule already covers this indicator
+		}
+
+		in, ok := c.buildInput(ind, p, protected)
+		if !ok {
+			continue
+		}
+		in.NodeMode = c.mode(p.AdapterName())
+		d := policy.Evaluate(p, in.EvalInput)
+		if d.Outcome != policy.OutcomeEnforced {
+			continue
+		}
+		if _, err := c.applyDecision(ind, in, d); err != nil {
 			c.log.Warn().Err(err).Str("indicator", ind).Msg("coordinator: sweep enforce error")
 		}
 	}
+}
+
+// activeTargetSet returns the set of indicators the enforcer currently has a
+// live rule for. A List error yields an empty set, which fails safe toward
+// re-evaluation rather than assuming coverage.
+func (c *Coordinator) activeTargetSet() map[string]struct{} {
+	set := make(map[string]struct{})
+	rules, err := c.client.List()
+	if err != nil {
+		c.log.Warn().Err(err).Msg("coordinator: listing active rules for dedup")
+		return set
+	}
+	for _, r := range rules {
+		set[r.Target] = struct{}{}
+	}
+	return set
+}
+
+// activeTokenFor returns the rollback token of the live rule covering indicator,
+// or "" if none. Used by Explain and single-indicator dedup.
+func (c *Coordinator) activeTokenFor(indicator string) string {
+	rules, err := c.client.List()
+	if err != nil {
+		return ""
+	}
+	for _, r := range rules {
+		if r.Target == indicator {
+			return r.Token
+		}
+	}
+	return ""
 }
 
 // evalInput is EvalInput plus the threat id carried through for the decision op.

@@ -31,35 +31,63 @@ import (
 // (a real `nft` binary + CAP_NET_ADMIN); the platform-independent enforcement
 // logic is unit-tested against MemAdapter.
 type NFTablesAdapter struct {
-	table string
-	set4  string
-	set6  string
-	chain string
-	log   zerolog.Logger
+	table  string
+	set4   string
+	set6   string
+	chains []chainSpec // one filter chain per hook (input, forward, …)
+	deny   string      // verdict for a matched source: "drop" | "reject"
+	log    zerolog.Logger
 
 	runMu sync.Mutex // serialize nft invocations (nft is not concurrency-safe per table)
 }
 
+// chainSpec is one filter chain frien installs, bound to a netfilter hook.
+type chainSpec struct {
+	name string
+	hook string // "input" | "forward" | ...
+}
+
 // NFTablesOptions configures the adapter. Zero values fall back to safe defaults.
 type NFTablesOptions struct {
-	Table      string // default "frien"
-	ChainInput string // default "input"
+	Table string // default "frien"
+	// ChainInput names the input-hook chain (default "input"); it blocks traffic
+	// destined for this host.
+	ChainInput string
+	// ChainForward names the forward-hook chain (default "forward"); it blocks
+	// transit/routed traffic on a gateway node. Set to "-" to disable the forward
+	// chain on a host that must never filter forwarded traffic.
+	ChainForward string
+	// DenyAction is the verdict for a blocked source: "drop" (default, silent) or
+	// "reject" (send an ICMP admin-prohibited).
+	DenyAction string
 }
 
 // NewNFTablesAdapter constructs the adapter and ensures frien's table, sets, and
-// drop chain exist. Chain rules are (re)written idempotently on every start;
-// existing set elements — and thus their live kernel timeouts — are preserved
-// across a restart so reconciliation can adopt them.
+// per-hook drop chains exist. Chain rules are (re)written idempotently on every
+// start; existing set elements — and thus their live kernel timeouts — are
+// preserved across a restart so a restart never unblocks an active ban and
+// reconciliation can adopt them.
 func NewNFTablesAdapter(opts NFTablesOptions, log zerolog.Logger) (*NFTablesAdapter, error) {
 	if _, err := exec.LookPath("nft"); err != nil {
 		return nil, fmt.Errorf("enforcer: nft binary not found: %w", err)
 	}
+	deny := orDefault(opts.DenyAction, "drop")
+	if deny != "drop" && deny != "reject" {
+		return nil, fmt.Errorf("enforcer: nftables deny_action must be drop|reject, got %q", deny)
+	}
+	// Input always; forward by default (a forward chain is a harmless no-op on a
+	// host that forwards nothing, and closes the transit-traffic gap on gateways).
+	chains := []chainSpec{{name: orDefault(opts.ChainInput, "input"), hook: "input"}}
+	if opts.ChainForward != "-" {
+		chains = append(chains, chainSpec{name: orDefault(opts.ChainForward, "forward"), hook: "forward"})
+	}
 	a := &NFTablesAdapter{
-		table: orDefault(opts.Table, "frien"),
-		set4:  "frien_block4",
-		set6:  "frien_block6",
-		chain: orDefault(opts.ChainInput, "input"),
-		log:   log,
+		table:  orDefault(opts.Table, "frien"),
+		set4:   "frien_block4",
+		set6:   "frien_block6",
+		chains: chains,
+		deny:   deny,
+		log:    log,
 	}
 	if err := a.ensure(); err != nil {
 		return nil, err
@@ -69,20 +97,27 @@ func NewNFTablesAdapter(opts NFTablesOptions, log zerolog.Logger) (*NFTablesAdap
 
 func (a *NFTablesAdapter) Name() string { return "nftables" }
 
-// ensure creates the table/sets/chain and rewrites the two match rules. Sets are
-// created with `add` (idempotent) so their elements survive; the chain is
-// flushed and its two rules re-added so exactly one drop rule per family exists.
+// ensure creates the table, the two family sets, and one filter chain per hook,
+// each dropping/rejecting traffic whose source is in either set. Sets are
+// created with `add` (idempotent) so their elements — and live kernel timeouts —
+// survive a restart; each chain is flushed and its match rules re-added so
+// exactly one verdict rule per family exists per hook. The whole thing is one
+// `nft -f` transaction so a partial chain state is never left behind.
 func (a *NFTablesAdapter) ensure() error {
-	batch := strings.Join([]string{
+	lines := []string{
 		fmt.Sprintf("add table inet %s", a.table),
 		fmt.Sprintf("add set inet %s %s { type ipv4_addr; flags interval, timeout; }", a.table, a.set4),
 		fmt.Sprintf("add set inet %s %s { type ipv6_addr; flags interval, timeout; }", a.table, a.set6),
-		fmt.Sprintf("add chain inet %s %s { type filter hook input priority -10; policy accept; }", a.table, a.chain),
-		fmt.Sprintf("flush chain inet %s %s", a.table, a.chain),
-		fmt.Sprintf("add rule inet %s %s ip saddr @%s drop", a.table, a.chain, a.set4),
-		fmt.Sprintf("add rule inet %s %s ip6 saddr @%s drop", a.table, a.chain, a.set6),
-	}, "\n")
-	if err := a.runStdin(batch); err != nil {
+	}
+	for _, ch := range a.chains {
+		lines = append(lines,
+			fmt.Sprintf("add chain inet %s %s { type filter hook %s priority -10; policy accept; }", a.table, ch.name, ch.hook),
+			fmt.Sprintf("flush chain inet %s %s", a.table, ch.name),
+			fmt.Sprintf("add rule inet %s %s ip saddr @%s %s", a.table, ch.name, a.set4, a.deny),
+			fmt.Sprintf("add rule inet %s %s ip6 saddr @%s %s", a.table, ch.name, a.set6, a.deny),
+		)
+	}
+	if err := a.runStdin(strings.Join(lines, "\n")); err != nil {
 		return fmt.Errorf("enforcer: initializing nftables: %w", err)
 	}
 	return nil

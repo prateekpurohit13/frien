@@ -3,6 +3,7 @@ package enforcer
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -33,6 +34,9 @@ type Enforcer struct {
 	rollback *RollbackStore
 	now      func() time.Time
 
+	limiter   *rateLimiter // nil = unlimited
+	shedCount atomic.Int64 // frien_enforcement_rate_shed_total
+
 	mu       sync.RWMutex
 	adapters map[string]Adapter
 	modes    map[string]string // adapter -> observe|enforce
@@ -53,6 +57,18 @@ func New(rollback *RollbackStore, now func() time.Time, log zerolog.Logger) *Enf
 		modes:    make(map[string]string),
 	}
 }
+
+// SetRateLimit caps how many NEW rules the enforcer will install per minute
+// (0 = unlimited). Over-cap applies are shed fail-safe. Set once at startup
+// from policy.max_new_rules_per_minute.
+func (e *Enforcer) SetRateLimit(perMinute int) {
+	e.mu.Lock()
+	e.limiter = newRateLimiter(perMinute, e.now)
+	e.mu.Unlock()
+}
+
+// RateShedCount reports how many applies were shed by the new-rule rate cap.
+func (e *Enforcer) RateShedCount() int64 { return e.shedCount.Load() }
 
 // Register adds an adapter under its Name(), defaulting it to observe mode. An
 // adapter must be registered before decisions targeting it can be applied.
@@ -138,6 +154,24 @@ func (e *Enforcer) Apply(d *frienv1.EnforcementDecision) (applied bool, err erro
 	token := d.GetRollbackToken()
 	if token == "" {
 		return false, fmt.Errorf("enforcer: decision %s has no rollback_token", d.GetId())
+	}
+
+	// New-rule rate cap (authoritative, at the privileged boundary). A shed
+	// apply installs nothing and persists no token — it fails safe toward NOT
+	// enforcing under a decision storm, exactly the intent of "max changes per
+	// minute". Checked here (not in the daemon) so a runaway daemon can't bypass
+	// it.
+	e.mu.RLock()
+	limiter := e.limiter
+	e.mu.RUnlock()
+	if !limiter.allow() {
+		e.shedCount.Add(1)
+		e.log.Warn().
+			Str("decision", d.GetId()).
+			Str("target", d.GetTarget()).
+			Int64("rate_shed_total", e.shedCount.Load()).
+			Msg("enforcement rule shed: new-rule rate cap exceeded")
+		return false, nil
 	}
 
 	now := e.now()

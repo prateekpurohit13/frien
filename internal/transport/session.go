@@ -37,10 +37,15 @@ type Session struct {
 	// for populating a node's envelope-verification key without a separate
 	// key-distribution step. Nil if the peer's certificate does not carry an
 	// ed25519 key (should not happen for a conforming node).
-	PeerKey  ed25519.PublicKey
-	Version  uint32
-	maxBytes int
-	log      zerolog.Logger
+	PeerKey ed25519.PublicKey
+	// TrustTier is the quorum trust tier bound in the peer's CA-signed leaf
+	// certificate (see identity.TrustTierFromCert). It is authoritative precisely
+	// because it comes from the signed cert, not a self-report a node could
+	// inflate.
+	TrustTier string
+	Version   uint32
+	maxBytes  int
+	log       zerolog.Logger
 }
 
 func newSession(conn *quic.Conn, maxBytes int, log zerolog.Logger) (*Session, error) {
@@ -55,6 +60,7 @@ func newSession(conn *quic.Conn, maxBytes int, log zerolog.Logger) (*Session, er
 		NodeID:      leaf.Subject.CommonName,
 		Fingerprint: identity.CertFingerprint(leaf),
 		PeerKey:     peerKey,
+		TrustTier:   identity.TrustTierFromCert(leaf),
 		maxBytes:    maxBytes,
 		log:         log,
 	}, nil

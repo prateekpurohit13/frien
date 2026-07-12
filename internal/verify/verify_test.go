@@ -100,6 +100,23 @@ func TestVerifyOperatorSignedWithoutPinnedKeyIsUnknownSigner(t *testing.T) {
 	}
 }
 
+func TestRegisterAndReadTier(t *testing.T) {
+	keys := NewKeyStore()
+	// Unknown node defaults to the conservative tier.
+	if got := keys.TierFor("node.x"); got != "standard" {
+		t.Fatalf("unknown node tier = %q, want standard", got)
+	}
+	keys.RegisterTier("node.x", "high")
+	if got := keys.TierFor("node.x"); got != "high" {
+		t.Fatalf("registered tier = %q, want high", got)
+	}
+	// Empty tier is ignored (does not overwrite).
+	keys.RegisterTier("node.x", "")
+	if got := keys.TierFor("node.x"); got != "high" {
+		t.Fatalf("empty tier overwrote existing: %q", got)
+	}
+}
+
 func TestRegisterNodeIgnoresEmptyKey(t *testing.T) {
 	keys := NewKeyStore()
 	keys.RegisterNode("node.a", nil)

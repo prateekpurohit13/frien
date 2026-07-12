@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -242,6 +243,112 @@ func TestRevokedReporterExcluded(t *testing.T) {
 	}
 	if rules, _ := client.List(); len(rules) != 0 {
 		t.Fatal("no rule should be applied when quorum is not met")
+	}
+}
+
+// clock is a manually-advanced time source shared by an enforcer + its adapter.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *clock) now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// clockedHarness builds a coordinator over an enforcer whose adapter honors a
+// controllable clock, so a rule's kernel expiry can be simulated. It returns the
+// enforcer + client so a second "restarted" coordinator can be built over them.
+func clockedHarness(t *testing.T, ops []*frienv1.OperationEnvelope) (*Coordinator, *enforcer.Enforcer, enforcer.Client, *clock) {
+	t.Helper()
+	clk := &clock{t: time.Now()}
+	db := testDB(t)
+	rb, _ := enforcer.NewRollbackStore(db)
+	e := enforcer.New(rb, clk.now, zerolog.Nop())
+	e.Register(enforcer.NewMemAdapter("nftables", clk.now), enforcer.ModeEnforce)
+	client := enforcer.NewInProcClient(e, nil)
+	auditLog, _ := audit.NewLog(db, nil)
+	c := newClockedCoordinator(clk, client, auditLog, ops)
+	return c, e, client, clk
+}
+
+func newClockedCoordinator(clk *clock, client enforcer.Client, auditLog *audit.Log, ops []*frienv1.OperationEnvelope) *Coordinator {
+	recv := make(map[string]time.Time)
+	for _, o := range ops {
+		recv[o.GetOpId()] = clk.now().Add(-time.Minute)
+	}
+	c := New(Deps{
+		NodeID: "self", Clock: clk.now, Client: client, Audit: auditLog,
+		State: &fakeState{ops: ops, recv: recv}, Publisher: &fakePublisher{},
+		Trust: &fakeTrust{}, Partition: fakePartition{ps: policy.PartitionState{LiveDistinct: 3, KnownDistinct: 3}},
+		Log: zerolog.Nop(),
+	})
+	p := &policy.Policy{
+		ID: "edge_block_v1", Version: 7, Action: "block", MinConfidence: 0.85,
+		RequireWeight: 3.0, QuorumWindow: "1h", MaxTTL: "1h", KernelTimeoutRequired: true,
+	}
+	protected, _ := policy.NewProtectedSet(nil)
+	c.SetPolicy(p, protected)
+	return c
+}
+
+// The self-healing property: once a rule kernel-expires while the threat is
+// still present, the next sweep re-enforces it (a fresh token), rather than the
+// old in-memory dedup pinning it as "already enforced" forever.
+func TestReEnforcesAfterRuleExpires(t *testing.T) {
+	ops := threeReports("203.0.113.7", "fleet") // TTL 30m in threeReports
+	c, _, client, clk := clockedHarness(t, ops)
+
+	c.Sweep()
+	if rules, _ := client.List(); len(rules) != 1 {
+		t.Fatalf("expected one rule after first sweep, got %d", len(rules))
+	}
+	firstToken := c.activeTokenFor("203.0.113.7")
+
+	// A second sweep before expiry must NOT re-apply.
+	c.Sweep()
+	if rules, _ := client.List(); len(rules) != 1 {
+		t.Fatalf("sweep before expiry double-applied, got %d rules", len(rules))
+	}
+
+	// Advance past the 30m kernel timeout: the rule self-expires.
+	clk.advance(31 * time.Minute)
+	if rules, _ := client.List(); len(rules) != 0 {
+		t.Fatalf("rule should have kernel-expired, got %d", len(rules))
+	}
+
+	// The threat is still present → the next sweep re-enforces with a new token.
+	c.Sweep()
+	rules, _ := client.List()
+	if len(rules) != 1 {
+		t.Fatalf("expected re-enforcement after expiry, got %d rules", len(rules))
+	}
+	if newToken := c.activeTokenFor("203.0.113.7"); newToken == "" || newToken == firstToken {
+		t.Fatalf("re-enforcement should mint a fresh token, got %q (was %q)", newToken, firstToken)
+	}
+}
+
+// Restart safety: a brand-new coordinator over the same enforcer (as after a
+// daemon restart, when the in-memory map would have been empty) does not
+// re-apply a rule that is still live — dedup reads the enforcer's real state.
+func TestRestartSafeDedup(t *testing.T) {
+	ops := threeReports("203.0.113.7", "fleet")
+	c1, e, client, clk := clockedHarness(t, ops)
+	c1.Sweep()
+	if rules, _ := client.List(); len(rules) != 1 {
+		t.Fatalf("first coordinator should apply one rule, got %d", len(rules))
+	}
+
+	// "Restart": a fresh coordinator over the same enforcer/rollback store.
+	auditLog, _ := audit.NewLog(testDB(t), nil)
+	_ = e
+	c2 := newClockedCoordinator(clk, client, auditLog, ops)
+	c2.Sweep()
+	if rules, _ := client.List(); len(rules) != 1 {
+		t.Fatalf("restarted coordinator must not re-apply a live rule, got %d rules", len(rules))
 	}
 }
 

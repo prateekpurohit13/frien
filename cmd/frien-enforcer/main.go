@@ -66,6 +66,7 @@ func run(configPath string) error {
 		return err
 	}
 	e := enforcer.New(rb, nil, log)
+	e.SetRateLimit(cfg.Policy.MaxNewRulesPerMinute)
 
 	// Select the firewall backend. A real nftables backend requires Linux and
 	// CAP_NET_ADMIN; elsewhere we fall back to the self-expiring in-memory
@@ -73,8 +74,10 @@ func run(configPath string) error {
 	var adapter enforcer.Adapter
 	if cfg.Enforcement.NFTables.Enabled {
 		a, aerr := enforcer.NewNFTablesAdapter(enforcer.NFTablesOptions{
-			Table:      cfg.Enforcement.NFTables.Table,
-			ChainInput: cfg.Enforcement.NFTables.ChainInput,
+			Table:        cfg.Enforcement.NFTables.Table,
+			ChainInput:   cfg.Enforcement.NFTables.ChainInput,
+			ChainForward: cfg.Enforcement.NFTables.ChainForward,
+			DenyAction:   cfg.Enforcement.NFTables.DenyAction,
 		}, log)
 		if aerr != nil {
 			log.Warn().Err(aerr).Msg("nftables adapter unavailable; using in-memory backend")

@@ -31,15 +31,43 @@ import (
 // treat it as fatal; anti-entropy naturally retries it once the key is known.
 var ErrUnknownSigner = errors.New("verify: signer public key not yet known")
 
-// KeyStore holds the classical public keys used to verify envelopes.
+// KeyStore holds the classical public keys used to verify envelopes, and the
+// cert-bound trust tier learned alongside each node's key from its CA-verified
+// mTLS session (see RegisterTier).
 type KeyStore struct {
 	mu       sync.RWMutex
 	nodes    map[string]ed25519.PublicKey
+	tiers    map[string]string // node_id -> cert-bound trust tier
 	operator ed25519.PublicKey
 }
 
 func NewKeyStore() *KeyStore {
-	return &KeyStore{nodes: make(map[string]ed25519.PublicKey)}
+	return &KeyStore{nodes: make(map[string]ed25519.PublicKey), tiers: make(map[string]string)}
+}
+
+// RegisterTier records the trust tier bound in nodeID's CA-verified leaf
+// certificate (see identity.TrustTierFromCert). Because the tier comes from the
+// signed certificate, not a self-report, this is the Sybil-resistant source the
+// quorum layer weights by. An empty tier is ignored.
+func (k *KeyStore) RegisterTier(nodeID, tier string) {
+	if tier == "" {
+		return
+	}
+	k.mu.Lock()
+	k.tiers[nodeID] = tier
+	k.mu.Unlock()
+}
+
+// TierFor returns nodeID's cert-bound trust tier, or "standard" if this node has
+// not yet learned it (the conservative default — never a higher tier than
+// proven).
+func (k *KeyStore) TierFor(nodeID string) string {
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+	if t, ok := k.tiers[nodeID]; ok {
+		return t
+	}
+	return identity.TrustTierStandard
 }
 
 // RegisterNode records nodeID's classical public key, overwriting any prior

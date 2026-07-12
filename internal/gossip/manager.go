@@ -104,6 +104,7 @@ func (m *Manager) register(sess *transport.Session) {
 	m.mu.Unlock()
 	if m.keys != nil {
 		m.keys.RegisterNode(sess.NodeID, sess.PeerKey)
+		m.keys.RegisterTier(sess.NodeID, sess.TrustTier)
 	}
 }
 

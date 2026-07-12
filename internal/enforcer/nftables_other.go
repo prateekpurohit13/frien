@@ -11,8 +11,10 @@ import (
 // NFTablesOptions is defined on all platforms so daemon wiring compiles
 // everywhere; only the linux build provides a working adapter.
 type NFTablesOptions struct {
-	Table      string
-	ChainInput string
+	Table        string
+	ChainInput   string
+	ChainForward string
+	DenyAction   string
 }
 
 // NewNFTablesAdapter is unavailable off Linux. The daemon falls back to a

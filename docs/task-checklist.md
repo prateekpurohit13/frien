@@ -486,6 +486,35 @@ under `go test -race ./...`.
       `enforcer.TestReconcileAfterCrash` (token persisted pre-crash, kernel-expired
       while down, closed out on restart and never resurrected).
 
+### Phase 5 hardening sprint (2026-07-12)
+A grounded hardening pass (patterns extracted from mature OSS firewall/decision
+layers — see private research notes, not named in-repo) closed four gaps found
+after the initial Phase 5 build; all green under `go test -race ./...`, host +
+`GOOS=linux` builds clean.
+- [x] **New-rule rate cap (was: configured but unenforced).** `policy.max_new_rules_per_minute`
+      is now enforced at the *privileged enforcer* boundary (`enforcer.rateLimiter`,
+      token bucket), so even a runaway/compromised daemon cannot make frien install
+      unbounded rules. Over-cap applies are shed fail-safe (no rule, no token, no
+      audit). `enforcer.TestRateLimitShedsNewRules`.
+- [x] **Dedup against real active rules (was: in-memory map, lost on restart, never
+      re-enforced after expiry).** The coordinator now dedups by snapshotting the
+      enforcer's *actual* active rules once per sweep (the "diff live state" pattern),
+      which is crash-safe by construction, self-pruning, and re-enforces a still-present
+      threat once its rule kernel-expires. `coordinator.TestReEnforcesAfterRuleExpires`,
+      `TestRestartSafeDedup`.
+- [x] **Forward-chain enforcement (was: input hook only — transit traffic on a gateway
+      was never blocked).** The nft adapter now installs one filter chain per hook
+      (input + forward by default; `chain_forward: "-"` disables), configurable
+      DROP/REJECT verdict (`enforcement.nftables.deny_action`), all in one atomic
+      `nft -f` transaction. `internal/enforcer/nftables.go` (Linux build; validated by
+      cross-compile + inspection — runtime path needs the Linux integration env below).
+- [x] **Sybil-resistant trust tiers (was: self-declared → every peer treated as
+      `standard`).** A node's quorum trust tier is now bound to its CA-signed leaf
+      certificate's OU (`identity.TrustTierFromCert`), learned at the mTLS handshake
+      (`transport.Session.TrustTier` → `verify.KeyStore.RegisterTier`) and seeded for
+      self from its own cert — a node cannot inflate its own weight past what its cert
+      authorizes. `identity.TestTrustTierFromCert`, `verify.TestRegisterAndReadTier`.
+
 ---
 
 ## Phase 6: Detection, Visualization, and Demo (Sprint 6)
@@ -607,7 +636,7 @@ certificate renewal also moved from a fixed threshold to a jittered half-life mo
 - An operator tool to actually mint and inject a `RevocationRecord` (a `frienctl revoke` subcommand or an admin RPC) does not exist yet; `internal/revocation.Build` and `gossip.Engine.Ingest` are the building blocks such a tool would call. Same story for `internal/checkpoint`'s `Build`/`Verify` if an operator ever needs to construct one out-of-band.
 - CA/trust-bundle rotation still uses a single static pool loaded once at startup (`identity.LoadCACertPool`), not a prepare/activate overlap window; only per-node leaf-certificate renewal timing was hardened this pass (jittered half-life). Bundle rotation safety is a Phase 7+ CA-integration concern per the existing PQC/CA staging notes.
 - `govulncheck` currently flags 11 Go standard-library vulnerabilities on this toolchain (go1.26.1; fixed in go1.26.2) — an environment gap, not a code issue; bumping the toolchain is a follow-up.
-- **Phase 5 — peer trust tiers not yet gossiped:** `policy` weights quorum by trust tier, but `PeerState.trust_tier`/`trust_weight` is not yet disseminated, so the coordinator's `TrustResolver` knows only this node's own configured tier and treats every peer as `standard`. Wiring peer tiers into membership dissemination (so a `trusted` sensor actually weighs 3×) is a follow-up; the weighting math and policy override (`trust_weights`) are already in place.
-- **Phase 5 — nftables backend is Linux-runtime-only:** `internal/enforcer/nftables.go` is `//go:build linux` and shells out to `nft`; it cross-compiles and is correct-by-inspection but is exercised only on a real Linux host with `CAP_NET_ADMIN`. All platform-independent enforcement logic (self-expiry, rollback, reconcile, dead-man's switch, IPC) is unit-tested against the kernel-expiry-simulating `MemAdapter`, which is also the default backend on non-Linux and in observe/dry-run.
+- ~~**Phase 5 — peer trust tiers not yet gossiped**~~ — **closed in the Phase 5 hardening sprint**: trust tiers are now bound to the CA-signed leaf certificate (`identity.TrustTierFromCert`, read from the OU), learned at the mTLS handshake and consulted by quorum. This is Sybil-resistant (a node cannot self-declare a higher tier than its cert authorizes) — strictly better than gossiping a mutable self-report. Issuing certs with a tier OU is a PKI/operator convention; a node with no tier OU weighs `standard`.
+- **Phase 5 — nftables backend is Linux-runtime-only, and still shells out to `nft`:** `internal/enforcer/nftables.go` is `//go:build linux`; it cross-compiles and is correct-by-inspection (now with per-hook input+forward chains and DROP/REJECT), but is exercised only on a real Linux host with `CAP_NET_ADMIN`. All platform-independent logic (self-expiry, rollback, reconcile, rate cap, dead-man's switch, IPC) is unit-tested against the kernel-expiry-simulating `MemAdapter`, the default backend off-Linux and in observe/dry-run. **Tracked follow-up (deferred, not an oversight):** migrate the backend from shelling out to `nft` to the netlink library (`github.com/google/nftables`) for atomic transactions, no CLI-output parsing, and reconcile-by-`GetSetElements` — plus a privileged-Linux integration job (container/netns) that actually runs it. Deferred this pass because (a) the netlink dependency's transitive set does not resolve from the local module cache offline (version-mismatched `x/sys`, missing `vishvananda/*`), so adding it blind risks breaking the build, and (b) there is no Linux runtime here to test it against — the real prerequisite is that CI environment.
 - **Phase 5 — enforcer process model:** production uses the least-privilege split (`enforcement.enforcer_socket` set → daemon forwards to a separate privileged `frien-enforcer`). With the socket unset the daemon runs an in-process enforcer (single-binary/dev, or observe-only where no real firewall exists). Both share one `enforcer.Client` contract.
 - **Phase 5 — TestPolicy is single-sample + active-policy-only:** `frienctl policy test` evaluates one representative contribution against the *active* policy (no out-of-band policy store yet — a Phase 7 concern) and asks "would this enforce if the node were promoted and in a healthy partition", rather than replaying real fleet quorum.

@@ -134,6 +134,10 @@ func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, 
 	if len(cfg.OperatorPublicKey) > 0 {
 		keys.SetOperatorKey(cfg.OperatorPublicKey)
 	}
+	// Seed this node's own trust tier from its certificate, so self-authored
+	// reports are weighted by the same cert-bound tier as peers' — a node cannot
+	// inflate even its own weight past what its cert authorizes.
+	keys.RegisterTier(cfg.NodeID, identity.TrustTierFromCert(id.Certificate))
 	if revocations == nil {
 		revocations = revocation.NewSet()
 	}
@@ -701,6 +705,14 @@ func (e *Engine) ReceivedAt(opID string) time.Time {
 // excluded from counting toward a fresh quorum.
 func (e *Engine) IsNodeExcluded(nodeID string) bool {
 	return e.revocations.IsNodeExcluded(nodeID)
+}
+
+// TrustTier returns a node's cert-bound trust tier, learned from its CA-verified
+// mTLS session (peers) or seeded from this node's own certificate (self). It is
+// the Sybil-resistant weight source for quorum: a node cannot claim a tier its
+// certificate was not issued with. An unknown peer defaults to "standard".
+func (e *Engine) TrustTier(nodeID string) string {
+	return e.keys.TierFor(nodeID)
 }
 
 // PartitionView reports how much of the fleet this node can currently observe:

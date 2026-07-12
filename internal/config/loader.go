@@ -137,6 +137,7 @@ func defaultConfig() *Config {
 				Table:                 "frien",
 				ChainInput:            "frien-input",
 				ChainForward:          "frien-forward",
+				DenyAction:            "drop",
 				MaxRuleTTL:            "24h",
 				KernelTimeoutRequired: true,
 				DeadmanSwitchTimeout:  "30s",
