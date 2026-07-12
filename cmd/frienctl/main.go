@@ -46,6 +46,18 @@ func dispatch(args []string) error {
 		return cmdCompact(args[1:])
 	case "rotate-ca":
 		return cmdRotateCA(args[1:])
+	case "explain":
+		return cmdExplain(args[1:])
+	case "mode":
+		return cmdMode(args[1:])
+	case "rollback":
+		return cmdRollback(args[1:])
+	case "enforcements":
+		return cmdEnforcements(args[1:])
+	case "breakglass":
+		return cmdBreakglass(args[1:])
+	case "policy":
+		return cmdPolicy(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -64,6 +76,13 @@ Usage:
   frienctl revoke submit [--file FILE] [--socket PATH | --config PATH]
   frienctl compact [--scope SCOPE] [--socket PATH | --config PATH]
   frienctl rotate-ca --ca-file BUNDLE.pem [--socket PATH | --config PATH]
+  frienctl explain --indicator VALUE [--socket PATH | --config PATH]
+  frienctl mode set --adapter A --mode observe|enforce --reason TEXT [--socket PATH | --config PATH]
+  frienctl rollback --token TOKEN --reason TEXT [--socket PATH | --config PATH]
+  frienctl enforcements list [--adapter A] [--include-expired] [--socket PATH | --config PATH]
+  frienctl breakglass --flush-enforcement --force-observe --reason TEXT --confirm CODE [--socket PATH | --config PATH]
+  frienctl policy sign --file policy.yaml --key operator.pem [--key-id ID] [--out FILE]
+  frienctl policy test --record threat.json [--policy-id ID] [--socket PATH | --config PATH]
   frienctl version
 
 "revoke sign" runs entirely offline against the operator's own private key

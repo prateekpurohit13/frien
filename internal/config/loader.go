@@ -130,6 +130,8 @@ func defaultConfig() *Config {
 			DenyTargetingAdminEndpoint: true,
 		},
 		Enforcement: EnforcementConfig{
+			HeartbeatInterval: "10s",
+			SweepInterval:     "15s",
 			NFTables: NFTablesConfig{
 				Enabled:               false,
 				Table:                 "frien",

@@ -124,6 +124,15 @@ type PolicyConfig struct {
 }
 
 type EnforcementConfig struct {
+	// EnforcerSocket, when set, is the Unix socket of a separate privileged
+	// frien-enforcer process (the production least-privilege split): the daemon
+	// forwards decisions to it and heartbeats it. When empty, the daemon runs an
+	// in-process enforcer instead (single-binary/dev, or observe-only on
+	// non-Linux where no real firewall backend exists).
+	EnforcerSocket    string `yaml:"enforcer_socket"`
+	HeartbeatInterval string `yaml:"heartbeat_interval"` // daemon->enforcer heartbeat cadence; default 10s
+	SweepInterval     string `yaml:"sweep_interval"`     // policy re-evaluation cadence; default 15s
+
 	NFTables    NFTablesConfig    `yaml:"nftables"`
 	Kubernetes  KubernetesConfig  `yaml:"kubernetes"`
 	Cilium      CiliumConfig      `yaml:"cilium"`
@@ -312,6 +321,20 @@ func (c *Config) Validate() error {
 	for _, cidr := range c.Policy.ProtectedCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			ve.add(fmt.Sprintf("policy.protected_cidrs: invalid CIDR %q: %v", cidr, err))
+		}
+	}
+
+	// Enforcement durations (optional; validated only when set)
+	for name, val := range map[string]string{
+		"enforcement.heartbeat_interval":              c.Enforcement.HeartbeatInterval,
+		"enforcement.sweep_interval":                  c.Enforcement.SweepInterval,
+		"enforcement.nftables.deadman_switch_timeout": c.Enforcement.NFTables.DeadmanSwitchTimeout,
+	} {
+		if val == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(val); err != nil {
+			ve.add(fmt.Sprintf("%s: invalid duration %q: %v", name, val, err))
 		}
 	}
 

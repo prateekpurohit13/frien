@@ -162,6 +162,13 @@ func run(configPath string) error {
 	admin.SetOperatorOpInjector(mesh)
 	admin.SetCompactionTrigger(compactor)
 	admin.SetCARotator(&caRotator{bundle: trustBundle, tr: meshTransport})
+
+	// ── 7b. Policy + enforcement subsystem (Phase 5) ──────────────────────────
+	enf, err := buildEnforcement(meshCtx, cfg, id, store, mesh, log)
+	if err != nil {
+		return fmt.Errorf("starting enforcement: %w", err)
+	}
+	admin.SetEnforcementService(newEnforcementService(enf.coord, enf.client, enf.auditLog, enf.adapters, log))
 	adminSrv, err := admingrpc.NewServer(admingrpc.Options{
 		SocketPath:   cfg.AdminAPI.Socket,
 		SocketMode:   0o660,

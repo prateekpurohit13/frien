@@ -78,6 +78,20 @@ type CARotator interface {
 	PrepareNext(nextCAPEM []byte) error
 }
 
+// EnforcementService is the daemon-side backing for the Phase 5 policy and
+// enforcement RPCs. cmd/friend implements it over the coordinator, the
+// enforcement client, and the audit log, keeping this package decoupled from
+// those subsystems. It is nil until the daemon wires it, in which case the
+// enforcement RPCs report Unimplemented.
+type EnforcementService interface {
+	Explain(indicator string) (*frienv1.ExplainDecisionResponse, error)
+	SetMode(adapter, mode, reason string) (prev, cur, auditID string, err error)
+	Rollback(token, reason string) (status, auditID string, err error)
+	ListEnforcements(adapterFilter string, includeExpired bool) ([]*frienv1.EnforcementDecision, error)
+	Breakglass(reason, confirmationCode string) (rulesRemoved int64, newMode, auditID string, err error)
+	TestPolicy(policyID, threatJSON string) (*frienv1.TestPolicyResponse, error)
+}
+
 // AdminService implements the local admin gRPC API (proto/v1 AdminService).
 //
 // Phase 1 implements GetStatus, which needs only config, identity, and storage —
@@ -93,6 +107,7 @@ type AdminService struct {
 	injector  OperatorOpInjector
 	compactor CompactionTrigger
 	rotator   CARotator
+	enforce   EnforcementService
 	readOnly  bool
 	log       zerolog.Logger
 }
@@ -116,6 +131,9 @@ func (s *AdminService) SetCompactionTrigger(c CompactionTrigger) { s.compactor =
 
 // SetCARotator wires RotateCA once the trust bundle and transport are running.
 func (s *AdminService) SetCARotator(r CARotator) { s.rotator = r }
+
+// SetEnforcementService wires the Phase 5 policy/enforcement RPCs.
+func (s *AdminService) SetEnforcementService(e EnforcementService) { s.enforce = e }
 
 // GetStatus returns current node health and state. Available to any authenticated
 // caller (RBAC enforcement arrives with the Auth interceptor in a later phase).
@@ -177,32 +195,116 @@ func (s *AdminService) ReportThreat(context.Context, *frienv1.ReportThreatReques
 	return nil, notYet("ReportThreat", "Phase 3 (CRDT state mesh)")
 }
 
-func (s *AdminService) ExplainDecision(context.Context, *frienv1.ExplainDecisionRequest) (*frienv1.ExplainDecisionResponse, error) {
-	return nil, notYet("ExplainDecision", "Phase 5 (policy + enforcement)")
+// ExplainDecision returns the full decision trail for an indicator (read-only).
+func (s *AdminService) ExplainDecision(_ context.Context, req *frienv1.ExplainDecisionRequest) (*frienv1.ExplainDecisionResponse, error) {
+	if s.enforce == nil {
+		return nil, notYet("ExplainDecision", "Phase 5 (policy + enforcement)")
+	}
+	if req.GetIndicator() == "" {
+		return nil, status.Error(codes.InvalidArgument, "indicator is required")
+	}
+	resp, err := s.enforce.Explain(req.GetIndicator())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "explain: %v", err)
+	}
+	return resp, nil
 }
 
-func (s *AdminService) SetEnforceMode(context.Context, *frienv1.SetEnforceModeRequest) (*frienv1.SetEnforceModeResponse, error) {
-	return nil, notYet("SetEnforceMode", "Phase 5 (policy + enforcement)")
+// SetEnforceMode promotes/demotes an adapter's enforcement mode. Mutating, so it
+// is refused under admin_api.read_only and writes an audit entry.
+func (s *AdminService) SetEnforceMode(_ context.Context, req *frienv1.SetEnforceModeRequest) (*frienv1.SetEnforceModeResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.enforce == nil {
+		return nil, notYet("SetEnforceMode", "Phase 5 (policy + enforcement)")
+	}
+	if req.GetMode() != "observe" && req.GetMode() != "enforce" {
+		return nil, status.Error(codes.InvalidArgument, "mode must be observe|enforce")
+	}
+	if req.GetAdapter() == "" || req.GetReason() == "" {
+		return nil, status.Error(codes.InvalidArgument, "adapter and reason are required")
+	}
+	prev, cur, auditID, err := s.enforce.SetMode(req.GetAdapter(), req.GetMode(), req.GetReason())
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "set mode: %v", err)
+	}
+	s.log.Warn().Str("adapter", req.GetAdapter()).Str("from", prev).Str("to", cur).
+		Str("reason", req.GetReason()).Msg("admin: enforce mode changed")
+	return &frienv1.SetEnforceModeResponse{PreviousMode: prev, CurrentMode: cur, AuditId: auditID}, nil
 }
 
-func (s *AdminService) RollbackEnforcement(context.Context, *frienv1.RollbackEnforcementRequest) (*frienv1.RollbackEnforcementResponse, error) {
-	return nil, notYet("RollbackEnforcement", "Phase 5 (policy + enforcement)")
+// RollbackEnforcement removes an applied rule by its rollback token.
+func (s *AdminService) RollbackEnforcement(_ context.Context, req *frienv1.RollbackEnforcementRequest) (*frienv1.RollbackEnforcementResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.enforce == nil {
+		return nil, notYet("RollbackEnforcement", "Phase 5 (policy + enforcement)")
+	}
+	if req.GetRollbackToken() == "" || req.GetReason() == "" {
+		return nil, status.Error(codes.InvalidArgument, "rollback_token and reason are required")
+	}
+	st, auditID, err := s.enforce.Rollback(req.GetRollbackToken(), req.GetReason())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "rollback: %v", err)
+	}
+	return &frienv1.RollbackEnforcementResponse{Status: st, AuditId: auditID}, nil
 }
 
-func (s *AdminService) ListEnforcements(context.Context, *frienv1.ListEnforcementsRequest) (*frienv1.ListEnforcementsResponse, error) {
-	return nil, notYet("ListEnforcements", "Phase 5 (policy + enforcement)")
+// ListEnforcements returns the node's active (and optionally expired) rules.
+func (s *AdminService) ListEnforcements(_ context.Context, req *frienv1.ListEnforcementsRequest) (*frienv1.ListEnforcementsResponse, error) {
+	if s.enforce == nil {
+		return nil, notYet("ListEnforcements", "Phase 5 (policy + enforcement)")
+	}
+	list, err := s.enforce.ListEnforcements(req.GetAdapterFilter(), req.GetIncludeExpired())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list enforcements: %v", err)
+	}
+	return &frienv1.ListEnforcementsResponse{Enforcements: list}, nil
 }
 
-func (s *AdminService) Breakglass(context.Context, *frienv1.BreakglassRequest) (*frienv1.BreakglassResponse, error) {
-	return nil, notYet("Breakglass", "Phase 5 (enforcement)")
+// Breakglass flushes all frien-managed rules and forces observe mode. It is the
+// self-lockout escape hatch and requires both explicit flags and a confirmation
+// code (see docs/ENFORCEMENT_SAFETY.md §Breakglass).
+func (s *AdminService) Breakglass(_ context.Context, req *frienv1.BreakglassRequest) (*frienv1.BreakglassResponse, error) {
+	if err := s.rejectIfReadOnly(); err != nil {
+		return nil, err
+	}
+	if s.enforce == nil {
+		return nil, notYet("Breakglass", "Phase 5 (enforcement)")
+	}
+	if !req.GetFlushEnforcement() || !req.GetForceObserve() {
+		return nil, status.Error(codes.InvalidArgument, "breakglass requires flush_enforcement=true and force_observe=true")
+	}
+	if req.GetReason() == "" || req.GetConfirmationCode() == "" {
+		return nil, status.Error(codes.InvalidArgument, "reason and confirmation_code are required")
+	}
+	removed, newMode, auditID, err := s.enforce.Breakglass(req.GetReason(), req.GetConfirmationCode())
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "breakglass: %v", err)
+	}
+	s.log.Warn().Int64("rules_removed", removed).Str("reason", req.GetReason()).Msg("admin: BREAKGLASS invoked")
+	return &frienv1.BreakglassResponse{RulesRemoved: removed, NewMode: newMode, AuditId: auditID}, nil
 }
 
 func (s *AdminService) GetHardenReport(context.Context, *frienv1.GetHardenReportRequest) (*frienv1.GetHardenReportResponse, error) {
 	return nil, notYet("GetHardenReport", "Phase 7 (hardening)")
 }
 
-func (s *AdminService) TestPolicy(context.Context, *frienv1.TestPolicyRequest) (*frienv1.TestPolicyResponse, error) {
-	return nil, notYet("TestPolicy", "Phase 5 (policy)")
+// TestPolicy dry-runs a threat sample against a policy without touching state.
+func (s *AdminService) TestPolicy(_ context.Context, req *frienv1.TestPolicyRequest) (*frienv1.TestPolicyResponse, error) {
+	if s.enforce == nil {
+		return nil, notYet("TestPolicy", "Phase 5 (policy)")
+	}
+	if req.GetThreatJson() == "" {
+		return nil, status.Error(codes.InvalidArgument, "threat_json is required")
+	}
+	resp, err := s.enforce.TestPolicy(req.GetPolicyId(), req.GetThreatJson())
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "test policy: %v", err)
+	}
+	return resp, nil
 }
 
 // InjectOperatorOp admits an operator-signed envelope (built offline; see the

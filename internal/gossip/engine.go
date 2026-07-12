@@ -115,6 +115,9 @@ type Engine struct {
 	mu        sync.Mutex
 	watermark map[string]crdt.Timestamp
 
+	recvMu sync.Mutex
+	recvAt map[string]time.Time // op_id -> local receive/creation time, for the policy quorum window
+
 	fanoutMu sync.Mutex
 	fanout   int // adaptive per-round peer fan-out; 0 until first round
 }
@@ -146,6 +149,7 @@ func New(cfg Config, id *identity.Identity, clock *crdt.Clock, set *crdt.OpSet, 
 		peerWatermarks: checkpoint.NewPeerWatermarks(),
 		revocations:    revocations,
 		watermark:      make(map[string]crdt.Timestamp),
+		recvAt:         make(map[string]time.Time),
 	}
 	e.mgr = NewManager(tr, e, keys, log)
 	e.swim = membership.New(cfg.NodeID, &prober{eng: e}, membership.Config{
@@ -342,6 +346,7 @@ func (e *Engine) Publish(opType string, payload proto.Message, scopeKey string) 
 	if _, err := e.set.Add(env); err != nil {
 		return nil, err
 	}
+	e.noteReceived(env.GetOpId())
 	return env, nil
 }
 
@@ -611,6 +616,7 @@ func (e *Engine) admitted(env *frienv1.OperationEnvelope, ts crdt.Timestamp, equ
 	if env.GetOpType() == crdt.OpRevocation {
 		e.applyRevocation(env)
 	}
+	e.noteReceived(env.GetOpId())
 	e.recordWatermark(env.GetNodeId(), ts)
 	if equivocation != nil {
 		crdt.StampAttribution(equivocation, e.cfg.NodeID, time.Now())
@@ -666,6 +672,66 @@ func (e *Engine) recordWatermark(nodeID string, ts crdt.Timestamp) {
 	if cur, ok := e.watermark[nodeID]; !ok || ts.Compare(cur) > 0 {
 		e.watermark[nodeID] = ts
 	}
+}
+
+// noteReceived stamps the local wall-clock time an op first entered this node's
+// state, once. The policy quorum window is measured against this local receive
+// time (never origin wall-clock), so clock skew cannot inflate or deflate
+// quorum (docs/FRIEN_ARCHITECTURE.md §8.1).
+func (e *Engine) noteReceived(opID string) {
+	if opID == "" {
+		return
+	}
+	e.recvMu.Lock()
+	if _, seen := e.recvAt[opID]; !seen {
+		e.recvAt[opID] = time.Now()
+	}
+	e.recvMu.Unlock()
+}
+
+// ReceivedAt returns the local receive/creation time recorded for opID, or the
+// zero time if the op is unknown.
+func (e *Engine) ReceivedAt(opID string) time.Time {
+	e.recvMu.Lock()
+	defer e.recvMu.Unlock()
+	return e.recvAt[opID]
+}
+
+// IsNodeExcluded reports whether an origin node is revoked or tainted, and so
+// excluded from counting toward a fresh quorum.
+func (e *Engine) IsNodeExcluded(nodeID string) bool {
+	return e.revocations.IsNodeExcluded(nodeID)
+}
+
+// PartitionView reports how much of the fleet this node can currently observe:
+// live is the count of distinct non-excluded identities that are alive (self
+// included); known is every distinct non-excluded identity this node has ever
+// learned of (self included). The policy layer uses these to withhold fleet-
+// scoped enforcement in a minority partition.
+func (e *Engine) PartitionView() (live, known int) {
+	known, live = 1, 1 // self
+	for _, m := range e.swim.List().Members() {
+		if m.NodeID == e.cfg.NodeID || e.revocations.IsNodeExcluded(m.NodeID) {
+			continue
+		}
+		known++
+		if m.State == membership.StateAlive {
+			live++
+		}
+	}
+	return live, known
+}
+
+// PresentThreatOps returns the present (live, non-retracted, unexpired) threat-
+// record envelopes at now, for the policy coordinator to evaluate.
+func (e *Engine) PresentThreatOps(now time.Time) []*frienv1.OperationEnvelope {
+	var out []*frienv1.OperationEnvelope
+	for _, env := range e.set.PresentOps(now) {
+		if env.GetOpType() == crdt.OpThreatRecord {
+			out = append(out, env)
+		}
+	}
+	return out
 }
 
 func (e *Engine) outUpdates() []*frienv1.PeerUpdate {

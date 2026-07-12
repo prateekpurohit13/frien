@@ -393,20 +393,98 @@ fixed." The user asked for it to be closed properly before Phase 5, so it was:
 
 ## Phase 5: Signed Policy and Fail-Safe Enforcement (Sprint 5)
 
-- [ ] `internal/policy/engine.go` — policy evaluation
-- [ ] `internal/policy/quorum.go` — partition-safe quorum check
-- [ ] `internal/policy/protect.go` — protected CIDR and self-plane checks
-- [ ] `internal/enforcer/nftables.go` — nftables adapter with kernel expiry
-- [ ] `internal/enforcer/deadman.go` — dead-man's switch
-- [ ] `internal/enforcer/rollback.go` — durable rollback token management
-- [ ] `internal/audit/explain.go` — `frienctl explain` data assembly
+Built in four tested sub-sprints (5a policy core, 5b enforcer, 5c audit/explain,
+5d daemon+CLI+process wiring), mirroring the Phase 3/4 staging. All packages green
+under `go test -race ./...`.
+
+### 5a — Policy decision core (pure, no I/O)
+- [x] `internal/policy/policy.go` — operator-signed, versioned `Policy` (YAML,
+      matches FRIEN_ARCHITECTURE §Layer 5); `Load`/`Parse`/`validate`,
+      `CanonicalBytes` (deterministic, number-form-stable), `Verify`/`Sign`/
+      `SignDetached` against the pinned operator ed25519 key. A node never trusts
+      an unsigned/forged policy.
+- [x] `internal/policy/quorum.go` — partition-safe weighted quorum: distinct
+      identities only (dedup by fingerprint→node), trust-tier weighting
+      (`DefaultTrustWeights` standard/trusted/high = 1/3/5), bounded window by
+      **local receive time**, revoked/tainted and sub-`min_confidence` excluded;
+      `PartitionState.IsMajority` (strict majority of known distinct identities).
+- [x] `internal/policy/protect.go` — protected-CIDR + self-plane checks;
+      `DefaultProtectedCIDRs` (IPv6 mandatory — IPv4-only list is a config error),
+      CIDR-overlap refusal, `deny_if_target_is_admin_endpoint`.
+- [x] `internal/policy/engine.go` — `Evaluate`: no-record → protected(deny) →
+      quorum → partition(fleet) → observe-vs-enforce → kernel-timeout gate, in
+      that safety order; `Decision.ToProto`. Full unit tests (engine/quorum/
+      protect/policy_test.go).
+
+### 5b — Enforcer (owns rule lifetime; least-privilege split)
+- [x] `internal/enforcer/adapter.go` — `Adapter` contract (fail-open removal,
+      fail-closed apply; frien chains only, never host baseline).
+- [x] `internal/enforcer/nftables.go` (`//go:build linux`) — nftables backend
+      via `nft`: per-element kernel `timeout` (self-expiry), token stored as
+      element comment, isolated `inet frien` table/sets/chain. Cross-compiles for
+      linux; runtime-tested only on a real Linux host (documented).
+- [x] `internal/enforcer/mem_adapter.go` — cross-platform in-memory adapter that
+      **simulates kernel expiry** (injectable clock); the observe/dry-run and
+      non-Linux backend, and what the exit-criteria unit tests run against.
+- [x] `internal/enforcer/rollback.go` — durable rollback-token store (bbolt);
+      persisted before the kernel write so a crash is always reconcilable.
+- [x] `internal/enforcer/deadman.go` — dead-man's switch (heartbeat monitor,
+      re-arming, `frien_deadman_triggered_total`).
+- [x] `internal/enforcer/enforcer.go` — orchestrator: per-adapter mode, `Apply`
+      (persist-then-write), `Rollback`, `FlushAll`, `ForceObserve`, `Reconcile`.
+- [x] `internal/enforcer/ipc.go`+`client.go`+`server.go` — length-prefixed JSON
+      IPC over a Unix socket between the unprivileged daemon and the privileged
+      helper; one `Client` contract, two impls (`InProcClient`, `SocketClient`);
+      every request is an implicit heartbeat. Tests exercise the socket path
+      in-process.
+
+### 5c — Audit + explain
+- [x] `internal/audit/audit.go` — immutable, hash-linked audit log (bbolt);
+      `Append`/`Get`/`List`/`Verify` (detects tamper and deletion).
+- [x] `internal/audit/explain.go` — `Explanation` projection of a `policy.Decision`
+      + rollback token + audit id → `ExplainDecisionResponse`.
+
+### 5d — Wiring (daemon, RPCs, CLI, process, receive-time)
+- [x] `internal/coordinator/coordinator.go` — gathers contributions from the op
+      set + membership + receive-times, runs `policy.Evaluate`, applies enforced
+      decisions through the `Client`, audits, publishes the `EnforcementDecision`
+      op; dedupes so a standing threat enforces once. Injected interfaces; the
+      five exit criteria are proven here end-to-end through the real client.
+- [x] `internal/gossip/engine.go` — local receive-time seam (`noteReceived`/
+      `ReceivedAt`), `PresentThreatOps`, `IsNodeExcluded`, `PartitionView`.
+- [x] `internal/revocation` — `IsNodeExcluded(nodeID)` (quorum-eligibility query;
+      closes the Phase 4 "revocation has no quorum effect yet" gap).
+- [x] `internal/grpc/api.go` — `ExplainDecision`, `SetEnforceMode`,
+      `RollbackEnforcement`, `ListEnforcements`, `Breakglass`, `TestPolicy` wired
+      to an `EnforcementService` (read-only-guarded where mutating).
+- [x] `cmd/friend` — `buildEnforcement` (in-process enforcer or socket client to
+      a separate frien-enforcer), verified-policy load + self-plane protection,
+      heartbeat + sweep loops, reconcile-on-start; `enforcementService` glue
+      (mode-set/rollback/breakglass audited, 2/min breakglass limiter, TestPolicy
+      dry-run). Service tests in `cmd/friend`.
+- [x] `cmd/frien-enforcer` — the privileged helper process: own rollback store,
+      nftables/mem backend, dead-man's switch, reconcile-on-start, IPC server.
+- [x] `cmd/frienctl` — `explain`, `mode set`, `rollback`, `enforcements list`,
+      `breakglass`, `policy sign` (offline), `policy test`.
 
 ### Phase 5 Exit Criteria
-- [ ] Observe mode logs/explains without applying rules
-- [ ] Enforce mode creates self-expiring nftables entry
-- [ ] Protected target is denied by policy with explanation
-- [ ] Minority partition refuses fleet-scoped enforcement
-- [ ] Daemon crash leaves no leaked rule past kernel timeout
+- [x] Observe mode logs/explains without applying rules —
+      `coordinator.TestObserveModeExplainsWithoutApplying` (no rule, no publish);
+      `cmd/friend.TestServiceExplainNoRecord`.
+- [x] Enforce mode creates self-expiring nftables entry —
+      `enforcer.TestRuleSelfExpires` (rule gone after timeout, no explicit
+      removal) + `coordinator.TestEnforceModeAppliesAndPublishes` end-to-end
+      through the client; nftables `timeout` on Linux is the production path.
+- [x] Protected target is denied by policy with explanation —
+      `coordinator.TestProtectedTargetDenied`,
+      `policy.TestEvaluateProtectedBeatsQuorum`,
+      `cmd/friend.TestServiceTestPolicyProtectedDenied`.
+- [x] Minority partition refuses fleet-scoped enforcement —
+      `coordinator.TestMinorityPartitionRefusesFleet` (local scope still enforces:
+      `TestLocalScopeEnforcesUnderPartition`).
+- [x] Daemon crash leaves no leaked rule past kernel timeout —
+      `enforcer.TestReconcileAfterCrash` (token persisted pre-crash, kernel-expired
+      while down, closed out on restart and never resurrected).
 
 ---
 
@@ -446,9 +524,22 @@ fixed." The user asked for it to be closed properly before Phase 5, so it was:
 ## Current Status
 
 **Completed:** Phase 0 ✓, Phase 1 ✓, Phase 2 ✓, Phase 3 (scoped CRDT state mesh, incl. live
-QUIC gossip integration) ✓, and Phase 4 (tamper-evidence, compaction, revocation) ✓ —
-see the Phase 4 section above for the one deliberate scope decision (DAG/parents causal
-tracking not built) and why it doesn't compromise the phase's actual safety goals.
+QUIC gossip integration) ✓, Phase 4 (tamper-evidence, compaction, revocation) ✓, and
+Phase 5 (signed policy + fail-safe enforcement) ✓ — see the Phase 5 section above for the
+four tested sub-sprints and how each of the five exit criteria is proven.
+
+**Phase 5 delivered:** the pure policy decision core (`internal/policy`: signed/versioned
+policy, partition-safe weighted quorum by local-receive-time, protected-CIDR/self-plane,
+observe-first `Evaluate`); the fail-safe enforcer (`internal/enforcer`: kernel-timeout
+nftables backend + kernel-expiry-simulating in-memory backend, dead-man's switch, durable
+bbolt rollback tokens, crash reconciliation) split into an unprivileged daemon + a
+privileged `frien-enforcer` helper over a length-prefixed-JSON Unix-socket IPC where every
+request is a heartbeat; the immutable hash-linked audit log + explain projection
+(`internal/audit`); the decision coordinator (`internal/coordinator`) that turns present
+threats into audited, published, self-expiring enforcement; the six Phase-5 admin RPCs; and
+the `frienctl explain / mode set / rollback / enforcements list / breakglass / policy
+sign|test` commands. Revocation now has a quorum effect (`revocation.IsNodeExcluded`),
+closing the Phase 4 dependency.
 
 **Production hardening of Phases 1–3 ✓** (see `docs/HARDENING_ROADMAP.md` for the full
 gap audit and rationale). Twelve validated sprints closed every self-audited fault-
@@ -512,7 +603,11 @@ certificate renewal also moved from a fixed threshold to a jittered half-life mo
 - OPA/Rego policy integration deferred until YAML policy engine is stable
 - `internal/verify` checks the classical (ed25519) signature only; PQC (ML-DSA-65) envelope verification is not performed since PQC public keys are not yet distributed mesh-wide (tracked as a Phase 2/7 follow-up in the PQC notes above). A present `pqc_signature` field neither passes nor fails verification on its own.
 - `internal/checkpoint`'s Compactor only compacts the fleet scope; see the package doc for why zone-scope compaction needs peer-zone metadata membership doesn't carry yet.
-- Revoking/tainting a node has no effect on quorum eligibility yet — `internal/policy`'s quorum check (Phase 5) is what would exclude a tainted/revoked node from counting toward a decision. Today revocation guarantees mesh-wide propagation and transport-level rejection only.
+- ~~Revoking/tainting a node has no effect on quorum eligibility yet~~ — **closed in Phase 5**: `revocation.Set.IsNodeExcluded(nodeID)` is consulted by the coordinator so a tainted/revoked identity's reports no longer count toward `policy` quorum, on top of the existing mesh-wide propagation and transport-level rejection.
 - An operator tool to actually mint and inject a `RevocationRecord` (a `frienctl revoke` subcommand or an admin RPC) does not exist yet; `internal/revocation.Build` and `gossip.Engine.Ingest` are the building blocks such a tool would call. Same story for `internal/checkpoint`'s `Build`/`Verify` if an operator ever needs to construct one out-of-band.
 - CA/trust-bundle rotation still uses a single static pool loaded once at startup (`identity.LoadCACertPool`), not a prepare/activate overlap window; only per-node leaf-certificate renewal timing was hardened this pass (jittered half-life). Bundle rotation safety is a Phase 7+ CA-integration concern per the existing PQC/CA staging notes.
 - `govulncheck` currently flags 11 Go standard-library vulnerabilities on this toolchain (go1.26.1; fixed in go1.26.2) — an environment gap, not a code issue; bumping the toolchain is a follow-up.
+- **Phase 5 — peer trust tiers not yet gossiped:** `policy` weights quorum by trust tier, but `PeerState.trust_tier`/`trust_weight` is not yet disseminated, so the coordinator's `TrustResolver` knows only this node's own configured tier and treats every peer as `standard`. Wiring peer tiers into membership dissemination (so a `trusted` sensor actually weighs 3×) is a follow-up; the weighting math and policy override (`trust_weights`) are already in place.
+- **Phase 5 — nftables backend is Linux-runtime-only:** `internal/enforcer/nftables.go` is `//go:build linux` and shells out to `nft`; it cross-compiles and is correct-by-inspection but is exercised only on a real Linux host with `CAP_NET_ADMIN`. All platform-independent enforcement logic (self-expiry, rollback, reconcile, dead-man's switch, IPC) is unit-tested against the kernel-expiry-simulating `MemAdapter`, which is also the default backend on non-Linux and in observe/dry-run.
+- **Phase 5 — enforcer process model:** production uses the least-privilege split (`enforcement.enforcer_socket` set → daemon forwards to a separate privileged `frien-enforcer`). With the socket unset the daemon runs an in-process enforcer (single-binary/dev, or observe-only where no real firewall exists). Both share one `enforcer.Client` contract.
+- **Phase 5 — TestPolicy is single-sample + active-policy-only:** `frienctl policy test` evaluates one representative contribution against the *active* policy (no out-of-band policy store yet — a Phase 7 concern) and asks "would this enforce if the node were promoted and in a healthy partition", rather than replaying real fleet quorum.

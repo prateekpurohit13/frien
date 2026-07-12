@@ -115,6 +115,28 @@ func (s *Set) IsTainted(fingerprint string) bool {
 	return ok
 }
 
+// IsNodeExcluded reports whether any fingerprint associated with nodeID has
+// been tainted (or revoked, which implies taint). This is the quorum-eligibility
+// query: a tainted/revoked node does not count as a fresh quorum contributor
+// (docs/FRIEN_ARCHITECTURE.md §8.1). It is keyed by node id rather than
+// fingerprint because the policy layer counts contributions by origin identity.
+func (s *Set) IsNodeExcluded(nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for fp, n := range s.nodeByFinger {
+		if n != nodeID {
+			continue
+		}
+		if _, ok := s.tainted[fp]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // NodeIDFor returns the node id last associated with fingerprint, if any, so
 // a caller can also drop an already-open session for a newly revoked peer.
 func (s *Set) NodeIDFor(fingerprint string) (string, bool) {
