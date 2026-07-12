@@ -32,6 +32,9 @@ const (
 	AdminService_InjectOperatorOp_FullMethodName    = "/frien.v1.AdminService/InjectOperatorOp"
 	AdminService_TriggerCompaction_FullMethodName   = "/frien.v1.AdminService/TriggerCompaction"
 	AdminService_RotateCA_FullMethodName            = "/frien.v1.AdminService/RotateCA"
+	AdminService_ListThreats_FullMethodName         = "/frien.v1.AdminService/ListThreats"
+	AdminService_GetStats_FullMethodName            = "/frien.v1.AdminService/GetStats"
+	AdminService_ListAudit_FullMethodName           = "/frien.v1.AdminService/ListAudit"
 )
 
 // AdminServiceClient is the client API for AdminService service.
@@ -65,6 +68,13 @@ type AdminServiceClient interface {
 	// rejected mid-rotation. Call it on every node before rolling out any
 	// new-CA-issued leaf certificate.
 	RotateCA(ctx context.Context, in *RotateCARequest, opts ...grpc.CallOption) (*RotateCAResponse, error)
+	// Read-only observability RPCs (Phase 6): power the operator TUI and any
+	// local tooling. ListThreats returns the present threat records; GetStats
+	// returns aggregate counters for charts; ListAudit returns the recent
+	// tamper-evident audit tail.
+	ListThreats(ctx context.Context, in *ListThreatsRequest, opts ...grpc.CallOption) (*ListThreatsResponse, error)
+	GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error)
+	ListAudit(ctx context.Context, in *ListAuditRequest, opts ...grpc.CallOption) (*ListAuditResponse, error)
 }
 
 type adminServiceClient struct {
@@ -205,6 +215,36 @@ func (c *adminServiceClient) RotateCA(ctx context.Context, in *RotateCARequest, 
 	return out, nil
 }
 
+func (c *adminServiceClient) ListThreats(ctx context.Context, in *ListThreatsRequest, opts ...grpc.CallOption) (*ListThreatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListThreatsResponse)
+	err := c.cc.Invoke(ctx, AdminService_ListThreats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) GetStats(ctx context.Context, in *GetStatsRequest, opts ...grpc.CallOption) (*GetStatsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetStatsResponse)
+	err := c.cc.Invoke(ctx, AdminService_GetStats_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *adminServiceClient) ListAudit(ctx context.Context, in *ListAuditRequest, opts ...grpc.CallOption) (*ListAuditResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAuditResponse)
+	err := c.cc.Invoke(ctx, AdminService_ListAudit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AdminServiceServer is the server API for AdminService service.
 // All implementations must embed UnimplementedAdminServiceServer
 // for forward compatibility.
@@ -236,6 +276,13 @@ type AdminServiceServer interface {
 	// rejected mid-rotation. Call it on every node before rolling out any
 	// new-CA-issued leaf certificate.
 	RotateCA(context.Context, *RotateCARequest) (*RotateCAResponse, error)
+	// Read-only observability RPCs (Phase 6): power the operator TUI and any
+	// local tooling. ListThreats returns the present threat records; GetStats
+	// returns aggregate counters for charts; ListAudit returns the recent
+	// tamper-evident audit tail.
+	ListThreats(context.Context, *ListThreatsRequest) (*ListThreatsResponse, error)
+	GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error)
+	ListAudit(context.Context, *ListAuditRequest) (*ListAuditResponse, error)
 	mustEmbedUnimplementedAdminServiceServer()
 }
 
@@ -284,6 +331,15 @@ func (UnimplementedAdminServiceServer) TriggerCompaction(context.Context, *Trigg
 }
 func (UnimplementedAdminServiceServer) RotateCA(context.Context, *RotateCARequest) (*RotateCAResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RotateCA not implemented")
+}
+func (UnimplementedAdminServiceServer) ListThreats(context.Context, *ListThreatsRequest) (*ListThreatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListThreats not implemented")
+}
+func (UnimplementedAdminServiceServer) GetStats(context.Context, *GetStatsRequest) (*GetStatsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetStats not implemented")
+}
+func (UnimplementedAdminServiceServer) ListAudit(context.Context, *ListAuditRequest) (*ListAuditResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAudit not implemented")
 }
 func (UnimplementedAdminServiceServer) mustEmbedUnimplementedAdminServiceServer() {}
 func (UnimplementedAdminServiceServer) testEmbeddedByValue()                      {}
@@ -540,6 +596,60 @@ func _AdminService_RotateCA_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AdminService_ListThreats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListThreatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ListThreats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ListThreats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ListThreats(ctx, req.(*ListThreatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_GetStats_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetStatsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).GetStats(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_GetStats_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).GetStats(ctx, req.(*GetStatsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AdminService_ListAudit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAuditRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AdminServiceServer).ListAudit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AdminService_ListAudit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AdminServiceServer).ListAudit(ctx, req.(*ListAuditRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AdminService_ServiceDesc is the grpc.ServiceDesc for AdminService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -598,6 +708,18 @@ var AdminService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RotateCA",
 			Handler:    _AdminService_RotateCA_Handler,
+		},
+		{
+			MethodName: "ListThreats",
+			Handler:    _AdminService_ListThreats_Handler,
+		},
+		{
+			MethodName: "GetStats",
+			Handler:    _AdminService_GetStats_Handler,
+		},
+		{
+			MethodName: "ListAudit",
+			Handler:    _AdminService_ListAudit_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

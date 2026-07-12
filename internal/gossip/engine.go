@@ -746,6 +746,18 @@ func (e *Engine) PresentThreatOps(now time.Time) []*frienv1.OperationEnvelope {
 	return out
 }
 
+// PresentDecisionOps returns the present enforcement-decision envelopes at now,
+// for the observability/stats layer (the quorum decision feed).
+func (e *Engine) PresentDecisionOps(now time.Time) []*frienv1.OperationEnvelope {
+	var out []*frienv1.OperationEnvelope
+	for _, env := range e.set.PresentOps(now) {
+		if env.GetOpType() == crdt.OpEnforcementDecision {
+			out = append(out, env)
+		}
+	}
+	return out
+}
+
 func (e *Engine) outUpdates() []*frienv1.PeerUpdate {
 	self := &frienv1.PeerUpdate{
 		NodeId:      e.cfg.NodeID,

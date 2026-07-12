@@ -21,9 +21,11 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/prateekpurohit13/frien/internal/admission"
 	"github.com/prateekpurohit13/frien/internal/checkpoint"
 	"github.com/prateekpurohit13/frien/internal/config"
 	"github.com/prateekpurohit13/frien/internal/crdt"
+	"github.com/prateekpurohit13/frien/internal/detector"
 	"github.com/prateekpurohit13/frien/internal/gossip"
 	admingrpc "github.com/prateekpurohit13/frien/internal/grpc"
 	"github.com/prateekpurohit13/frien/internal/health"
@@ -31,6 +33,7 @@ import (
 	"github.com/prateekpurohit13/frien/internal/logger"
 	"github.com/prateekpurohit13/frien/internal/membership"
 	"github.com/prateekpurohit13/frien/internal/oplog"
+	"github.com/prateekpurohit13/frien/internal/reporter"
 	"github.com/prateekpurohit13/frien/internal/revocation"
 	"github.com/prateekpurohit13/frien/internal/scope"
 	"github.com/prateekpurohit13/frien/internal/storage"
@@ -169,6 +172,47 @@ func run(configPath string) error {
 		return fmt.Errorf("starting enforcement: %w", err)
 	}
 	admin.SetEnforcementService(newEnforcementService(enf.coord, enf.client, enf.auditLog, enf.adapters, log))
+
+	// ── 7c. Detection ingest + observability (Phase 6) ────────────────────────
+	admissionCtrl := admission.New(admission.Config{
+		Budget: admission.BudgetConfig{
+			PerDetectorRate:  cfg.Admission.PerDetectorRate,
+			PerDetectorBurst: cfg.Admission.PerDetectorBurst,
+			PerNodeRate:      cfg.Admission.PerNodeRate,
+			PerNodeBurst:     cfg.Admission.PerNodeBurst,
+		},
+		CoalesceWindow:    parseDuration(cfg.Admission.CoalesceWindow, time.Minute),
+		ShedMinConfidence: cfg.Admission.ShedMinConfidence,
+	}, nil)
+	go admissionCtrl.Run(meshCtx, parseDuration(cfg.Admission.CoalesceWindow, time.Minute))
+	rep := reporter.New(admissionCtrl, mesh, cfg.Node.ID, nil)
+	admin.SetObservabilityService(newObservabilityService(rep, mesh, enf.auditLog, enf.client, "nftables"))
+
+	// Log-file detectors feed observations through the reporter's admission
+	// control. Each runs supervised (a panicking detector restarts without
+	// taking down the daemon).
+	var detectors []detector.Detector
+	if cfg.Detectors.SSHBruteForce.Enabled {
+		detectors = append(detectors, detector.NewSSHBruteForce(rep, detector.Config{
+			LogPath:    cfg.Detectors.SSHBruteForce.AuthLog,
+			Threshold:  cfg.Detectors.SSHBruteForce.Threshold,
+			Window:     parseDuration(cfg.Detectors.SSHBruteForce.Window, time.Minute),
+			Confidence: cfg.Detectors.SSHBruteForce.Confidence,
+		}, log, nil))
+	}
+	if cfg.Detectors.HTTPRateAnomaly.Enabled {
+		detectors = append(detectors, detector.NewHTTPRateAnomaly(rep, detector.Config{
+			LogPath:    cfg.Detectors.HTTPRateAnomaly.AccessLog,
+			Threshold:  cfg.Detectors.HTTPRateAnomaly.Threshold,
+			Window:     parseDuration(cfg.Detectors.HTTPRateAnomaly.Window, time.Minute),
+			Confidence: cfg.Detectors.HTTPRateAnomaly.Confidence,
+		}, log, nil))
+	}
+	if len(detectors) > 0 {
+		go detector.NewManager(log, detectors...).Run(meshCtx)
+		log.Info().Int("detectors", len(detectors)).Msg("detection backends started")
+	}
+
 	adminSrv, err := admingrpc.NewServer(admingrpc.Options{
 		SocketPath:   cfg.AdminAPI.Socket,
 		SocketMode:   0o660,

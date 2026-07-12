@@ -517,13 +517,67 @@ after the initial Phase 5 build; all green under `go test -race ./...`, host +
 
 ---
 
-## Phase 6: Detection, Visualization, and Demo (Sprint 6)
+## Phase 6: Detection, Visualization, and Demo (Sprint 6) ✓
 
-- [ ] `internal/detector/interface.go` — Detector interface (shared by log-file and eBPF backends)
-- [ ] `internal/detector/ssh_bruteforce.go` — log-file backend
-- [ ] `internal/detector/http_rate_anomaly.go` — log-file backend
-- [ ] Dashboard BFF and Next.js admin panel (stub)
-- [ ] Demo cluster scripts
+Built as: threat data layer + log-file detectors + a **Go TUI** (replacing the
+originally-planned Next.js panel — see the decision note below) + a local demo
+cluster. All green under `go test -race ./...`, host + `GOOS=linux` builds clean.
+
+### 6a — Threat ingest + observability RPCs
+- [x] `internal/reporter/reporter.go` — the single local threat-ingest choke
+      point: validate → admission (coalesce/shed/budget) → stamp ThreatRecord →
+      publish signed op. Used by both the ReportThreat RPC and every detector.
+- [x] `proto/v1/frien.proto` — added `ListThreats`, `GetStats`, `ListAudit` read
+      RPCs + messages (`DecisionStat`, `AuditEntrySummary`); regenerated with
+      **buf** (no `protoc` on this box — `buf.gen.yaml` mirrors the Makefile and
+      reproduces the prior output byte-for-byte).
+- [x] `internal/grpc/api.go` + `cmd/friend/observability.go` — implemented
+      `ReportThreat` (admission→publish), `ListThreats`, `GetStats` (threats/
+      membership/enforcement counters + quorum decision feed), `ListAudit`,
+      behind an `ObservabilityService` the daemon backs with the engine + audit
+      log + enforcement client.
+
+### 6b — Detectors (log-file backends)
+- [x] `internal/detector/detector.go` — `Detector` interface, poll-based
+      `tailFile` (no inotify dep, restart-safe start-at-EOF, rotation-aware), a
+      sliding-`windowCounter` with per-key cooldown, and a panic-recovering
+      `Manager`.
+- [x] `internal/detector/ssh_bruteforce.go` — auth-log failed-login detector
+      (from/rhost IP extraction) → high-severity threat.
+- [x] `internal/detector/http_rate_anomaly.go` — access-log request-rate
+      detector → medium-severity threat. Both wired into `cmd/friend`.
+
+### 6c — Operator TUI (Bubble Tea) — replaces the Next.js panel
+- [x] `internal/tui/` — `frienctl dashboard` (alias `tui`): a live terminal
+      dashboard over the local admin socket (same trust boundary as frienctl, no
+      new network surface). `render.go` has pure, unit-tested primitives
+      (eighth-block horizontal bar charts, sparklines, two-tone gauges, stat
+      tiles); `model.go` is the Bubble Tea model with 4 tabs (Overview /
+      Threats / Enforcement / Audit), history ring-buffers for sparklines, and a
+      fault-tolerant fetch (per-RPC-tolerant, keeps last-good on disconnect).
+      Render + model tests; frames visually verified.
+- [x] `cmd/frienctl` — `dashboard` and `report` subcommands (`report` injects a
+      threat through ReportThreat for demos/testing).
+
+### 6d — Demo cluster
+- [x] `scripts/gen-certs.go` — verified cross-platform PKI generator (CA +
+      per-node leaf certs with the trust tier in the OU + operator keypair);
+      proven to produce certs the identity layer loads with correct tiers.
+- [x] `scripts/demo/` — `run-cluster.sh` (3-node mesh: core-1 trusted, edge-2/3
+      standard), `attack.sh` (simulated SSH brute-force feeding every node's
+      detector → distinct-identity quorum), `stop-cluster.sh`, `policy.yaml`,
+      `README.md`. Orchestration scripts are Linux/macOS, validated by
+      inspection (they wire together already-tested components).
+
+### Decision: TUI instead of Next.js admin panel
+The originally-listed "Dashboard BFF and Next.js admin panel" was **deliberately
+replaced** by the Go TUI for the OSS core, because: frien is headless/local-first
+(admin binds to a local socket — a web panel would add a network-exposed admin
+surface); fleet-wide visualization is already the OTel→Grafana path (Layer 9
+avoids a per-node dashboard BFF as a SPOF); the "managed dashboard/BFF" is a
+**commercial** add-on in the business model, not OSS core; and a Go TUI keeps one
+language/binary/supply-chain (no Node/npm). The Next.js dashboard is re-scoped as
+the commercial, OTel-fed fleet dashboard — not part of the OSS Phase 6.
 
 ---
 

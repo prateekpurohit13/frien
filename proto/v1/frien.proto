@@ -36,6 +36,13 @@ service AdminService {
   // rejected mid-rotation. Call it on every node before rolling out any
   // new-CA-issued leaf certificate.
   rpc RotateCA(RotateCARequest) returns (RotateCAResponse);
+  // Read-only observability RPCs (Phase 6): power the operator TUI and any
+  // local tooling. ListThreats returns the present threat records; GetStats
+  // returns aggregate counters for charts; ListAudit returns the recent
+  // tamper-evident audit tail.
+  rpc ListThreats(ListThreatsRequest) returns (ListThreatsResponse);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -328,6 +335,61 @@ message RotateCARequest {
 
 message RotateCAResponse {
   bool in_overlap = 1;  // true once staged; false would mean it was rejected (returned as an error instead)
+}
+
+// ── Phase 6 observability messages ───────────────────────────────────────────
+
+message ListThreatsRequest {
+  string scope_filter    = 1;  // optional: "local" | "zone:<name>" | "fleet"
+  string severity_filter = 2;  // optional: "low" | "medium" | "high" | "critical"
+}
+
+message ListThreatsResponse {
+  repeated ThreatRecord threats = 1;  // present (live, non-expired) threat records
+}
+
+message GetStatsRequest {}
+
+// DecisionStat is a compact recent-decision entry for the quorum feed.
+message DecisionStat {
+  string indicator       = 1;
+  string outcome         = 2;  // enforced | observe_only | denied_by_policy | no_record
+  double matched_weight  = 3;
+  double required_weight = 4;
+  string created_at      = 5;  // RFC3339
+}
+
+message GetStatsResponse {
+  int64             threats_total          = 1;
+  map<string,int64> threats_by_severity    = 2;  // low/medium/high/critical -> count
+  map<string,int64> threats_by_scope       = 3;
+  map<string,int64> threats_by_detector    = 4;
+  int64             active_enforcements    = 5;
+  map<string,int64> enforcements_by_action = 6;  // block/rate_limit/alert -> count
+  map<string,int64> peers_by_state         = 7;  // alive/suspect/dead/left -> count
+  int64             rate_shed_total        = 8;  // new-rule rate-cap sheds
+  int64             audit_entries          = 9;
+  repeated DecisionStat recent_decisions   = 10; // newest first
+  string            enforce_mode           = 11; // this node/adapter's current mode
+}
+
+message ListAuditRequest {
+  int32 limit = 1;  // max entries, newest first (0 = a sensible default)
+}
+
+message AuditEntrySummary {
+  string id      = 1;
+  string time    = 2;  // RFC3339
+  string actor   = 3;
+  string action  = 4;  // mode_set | rollback | breakglass | decision | policy_load
+  string adapter = 5;
+  string target  = 6;
+  string outcome = 7;
+  string reason  = 8;
+}
+
+message ListAuditResponse {
+  repeated AuditEntrySummary entries = 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

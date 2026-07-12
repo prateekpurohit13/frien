@@ -92,6 +92,17 @@ type EnforcementService interface {
 	TestPolicy(policyID, threatJSON string) (*frienv1.TestPolicyResponse, error)
 }
 
+// ObservabilityService backs the Phase 6 read RPCs and the ReportThreat ingest
+// path. cmd/friend implements it over the reporter, the mesh engine, the audit
+// log, and the enforcement client. Nil until wired, in which case these RPCs
+// report Unimplemented.
+type ObservabilityService interface {
+	ReportThreat(req *frienv1.ReportThreatRequest) (*frienv1.ReportThreatResponse, error)
+	ListThreats(scopeFilter, severityFilter string) ([]*frienv1.ThreatRecord, error)
+	GetStats() (*frienv1.GetStatsResponse, error)
+	ListAudit(limit int) ([]*frienv1.AuditEntrySummary, error)
+}
+
 // AdminService implements the local admin gRPC API (proto/v1 AdminService).
 //
 // Phase 1 implements GetStatus, which needs only config, identity, and storage —
@@ -108,6 +119,7 @@ type AdminService struct {
 	compactor CompactionTrigger
 	rotator   CARotator
 	enforce   EnforcementService
+	obs       ObservabilityService
 	readOnly  bool
 	log       zerolog.Logger
 }
@@ -134,6 +146,9 @@ func (s *AdminService) SetCARotator(r CARotator) { s.rotator = r }
 
 // SetEnforcementService wires the Phase 5 policy/enforcement RPCs.
 func (s *AdminService) SetEnforcementService(e EnforcementService) { s.enforce = e }
+
+// SetObservabilityService wires the Phase 6 ReportThreat + read RPCs.
+func (s *AdminService) SetObservabilityService(o ObservabilityService) { s.obs = o }
 
 // GetStatus returns current node health and state. Available to any authenticated
 // caller (RBAC enforcement arrives with the Auth interceptor in a later phase).
@@ -191,8 +206,58 @@ func (s *AdminService) ListPeers(context.Context, *frienv1.ListPeersRequest) (*f
 	return &frienv1.ListPeersResponse{Peers: out}, nil
 }
 
-func (s *AdminService) ReportThreat(context.Context, *frienv1.ReportThreatRequest) (*frienv1.ReportThreatResponse, error) {
-	return nil, notYet("ReportThreat", "Phase 3 (CRDT state mesh)")
+// ReportThreat ingests one observation through admission and, if admitted,
+// publishes it as a signed threat op. It is the entry point for both detectors
+// and manual operator reports. It is not gated by read_only: threat ingestion is
+// the detection data path, not an administrative mutation of enforcement state.
+func (s *AdminService) ReportThreat(_ context.Context, req *frienv1.ReportThreatRequest) (*frienv1.ReportThreatResponse, error) {
+	if s.obs == nil {
+		return nil, notYet("ReportThreat", "Phase 6 (detection)")
+	}
+	if req.GetIndicator() == "" || req.GetIndicatorType() == "" || req.GetSeverity() == "" {
+		return nil, status.Error(codes.InvalidArgument, "indicator, indicator_type, and severity are required")
+	}
+	resp, err := s.obs.ReportThreat(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "report threat: %v", err)
+	}
+	return resp, nil
+}
+
+// ListThreats returns the present threat records (read-only).
+func (s *AdminService) ListThreats(_ context.Context, req *frienv1.ListThreatsRequest) (*frienv1.ListThreatsResponse, error) {
+	if s.obs == nil {
+		return nil, notYet("ListThreats", "Phase 6 (detection)")
+	}
+	threats, err := s.obs.ListThreats(req.GetScopeFilter(), req.GetSeverityFilter())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list threats: %v", err)
+	}
+	return &frienv1.ListThreatsResponse{Threats: threats}, nil
+}
+
+// GetStats returns aggregate counters for the operator dashboard (read-only).
+func (s *AdminService) GetStats(_ context.Context, _ *frienv1.GetStatsRequest) (*frienv1.GetStatsResponse, error) {
+	if s.obs == nil {
+		return nil, notYet("GetStats", "Phase 6 (detection)")
+	}
+	stats, err := s.obs.GetStats()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get stats: %v", err)
+	}
+	return stats, nil
+}
+
+// ListAudit returns the recent audit tail, newest first (read-only).
+func (s *AdminService) ListAudit(_ context.Context, req *frienv1.ListAuditRequest) (*frienv1.ListAuditResponse, error) {
+	if s.obs == nil {
+		return nil, notYet("ListAudit", "Phase 6 (detection)")
+	}
+	entries, err := s.obs.ListAudit(int(req.GetLimit()))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list audit: %v", err)
+	}
+	return &frienv1.ListAuditResponse{Entries: entries}, nil
 }
 
 // ExplainDecision returns the full decision trail for an indicator (read-only).

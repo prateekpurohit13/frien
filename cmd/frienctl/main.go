@@ -46,6 +46,10 @@ func dispatch(args []string) error {
 		return cmdCompact(args[1:])
 	case "rotate-ca":
 		return cmdRotateCA(args[1:])
+	case "dashboard", "tui":
+		return cmdDashboard(args[1:])
+	case "report":
+		return cmdReport(args[1:])
 	case "explain":
 		return cmdExplain(args[1:])
 	case "mode":
@@ -76,6 +80,8 @@ Usage:
   frienctl revoke submit [--file FILE] [--socket PATH | --config PATH]
   frienctl compact [--scope SCOPE] [--socket PATH | --config PATH]
   frienctl rotate-ca --ca-file BUNDLE.pem [--socket PATH | --config PATH]
+  frienctl dashboard [--demo] [--interval 1s] [--socket PATH | --config PATH]
+  frienctl report --indicator IP [--type ip] [--severity high] [--confidence 0.9] [--ttl 1h] [--scope fleet]
   frienctl explain --indicator VALUE [--socket PATH | --config PATH]
   frienctl mode set --adapter A --mode observe|enforce --reason TEXT [--socket PATH | --config PATH]
   frienctl rollback --token TOKEN --reason TEXT [--socket PATH | --config PATH]

@@ -1,0 +1,32 @@
+# Demo enforcement policy. Sign it with the operator key before use:
+#   frienctl policy sign --file scripts/demo/policy.yaml \
+#     --key demo/certs/operator.key --out demo/run/policy.signed.yaml
+#
+# require_weight 3.0 with the demo tiers means EITHER the one `trusted` node
+# (core-1, weight 3) alone, OR three `standard` edges together, can reach quorum —
+# a compact illustration of trust-tier-weighted, distinct-identity quorum.
+policy:
+  id: demo_block_v1
+  version: 1
+  action: block
+  default_mode: observe
+  min_confidence: 0.85
+  require_weight: 3.0
+  quorum_window: 5m
+  max_ttl: 1h
+  kernel_timeout_required: true
+  protect_self_planes: true
+  deny_if_target_is_admin_endpoint: true
+  protected_cidrs:
+    - 127.0.0.0/8
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - ::1/128
+    - fc00::/7
+    - fe80::/10
+  trust_weights:
+    standard: 1.0
+    trusted: 3.0
+    high: 5.0

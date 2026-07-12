@@ -1,0 +1,13 @@
+# buf code generation, used in place of a bare `protoc` invocation (buf ships
+# its own compiler). Mirrors the Makefile `proto-gen` target:
+#   protoc --proto_path=proto/v1 --go_out=pkg/proto/v1 --go-grpc_out=pkg/proto/v1
+#          --go_opt=paths=source_relative --go-grpc_opt=paths=source_relative
+# Run: buf generate proto/v1
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: pkg/proto/v1
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: pkg/proto/v1
+    opt: paths=source_relative
